@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ChargePoint Setup</title>
+  <script src="https://unpkg.com/@homebridge/plugin-ui-utils/dist/ui.min.js"></script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; padding: 20px; max-width: 600px; margin: 0 auto; }
+    .state { display: none; }
+    .state.active { display: block; }
+    .field-group { margin-bottom: 14px; }
+    label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; color: #555; }
+    input[type="text"], input[type="password"], input[type="email"] {
+      width: 100%; padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px; box-sizing: border-box;
+    }
+    button { padding: 9px 18px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; }
+    .btn-primary { background: #0071e3; color: #fff; }
+    .btn-primary:hover { background: #005bbf; }
+    .btn-secondary { background: #e0e0e0; color: #333; margin-left: 8px; }
+    .btn-secondary:hover { background: #ccc; }
+    .btn-danger { background: #d93025; color: #fff; }
+    .status-ok { color: #1c8c3c; font-weight: 600; }
+    .status-err { color: #d93025; font-weight: 600; }
+    .hint { font-size: 12px; color: #777; margin-top: 4px; }
+    .section { background: #f5f5f7; border-radius: 8px; padding: 14px; margin: 14px 0; }
+    ol { padding-left: 18px; }
+    ol li { margin-bottom: 8px; font-size: 14px; }
+    .loading-spinner { color: #777; font-style: italic; }
+  </style>
+</head>
+<body>
+
+<!-- LOADING -->
+<div id="state-loading" class="state active">
+  <p class="loading-spinner">Loading&#8230;</p>
+</div>
+
+<!-- CONNECTED -->
+<div id="state-connected" class="state">
+  <p class="status-ok">&#10003; Connected as <span id="connected-username"></span></p>
+  <p class="hint">Last refreshed: <span id="connected-last-refresh"></span></p>
+  <button class="btn-danger" onclick="disconnect()">Disconnect</button>
+</div>
+
+<!-- DISCONNECTED -->
+<div id="state-disconnected" class="state">
+  <h3>Connect to ChargePoint</h3>
+  <div class="field-group">
+    <label for="input-username">Email address</label>
+    <input type="email" id="input-username" placeholder="you@example.com" />
+  </div>
+  <div class="field-group">
+    <label for="input-password">Password</label>
+    <input type="password" id="input-password" placeholder="&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;" />
+  </div>
+  <button class="btn-primary" onclick="connect()">Connect</button>
+</div>
+
+<!-- CONNECTING -->
+<div id="state-connecting" class="state">
+  <p class="loading-spinner">Connecting&#8230;</p>
+</div>
+
+<!-- ERROR -->
+<div id="state-error" class="state">
+  <p class="status-err">Connection failed: <span id="error-message"></span></p>
+  <button class="btn-primary" onclick="showState('disconnected')">Try again</button>
+</div>
+
+<!-- CAPTCHA_BLOCKED -->
+<div id="state-captcha" class="state">
+  <p class="status-err">&#9888; Automatic login was blocked by bot protection.</p>
+  <div class="section">
+    <p><strong>Option 1 — Solve the captcha, then retry:</strong></p>
+    <button class="btn-secondary" id="btn-open-captcha" onclick="openCaptcha()">Open captcha in new tab</button>
+    <button class="btn-primary" onclick="retryCaptcha()" style="margin-top:10px; display:block;">I&#8217;ve solved it &#8212; try again</button>
+  </div>
+  <div class="section">
+    <p><strong>Option 2 — Manual login:</strong></p>
+    <ol>
+      <li>Click <a href="https://driver.chargepoint.com" target="_blank" rel="noopener">Open ChargePoint in a new tab</a> and log in with your credentials.</li>
+      <li>Press <strong>F12</strong> (or <strong>Cmd &#8997; I</strong> on Mac) to open Developer Tools.</li>
+      <li>Go to <strong>Application</strong> &#8594; <strong>Storage</strong> &#8594; <strong>Cookies</strong> &#8594; <code>https://driver.chargepoint.com</code>.</li>
+      <li>Find the cookie named <strong><code>coulomb_sess</code></strong>.</li>
+      <li>Click the value field and press <strong>Ctrl+A / Cmd+A</strong> to select all, then copy. The value contains <code>#</code> and <code>?</code> characters &#8212; copy the whole thing.</li>
+      <li>Paste it below and click <strong>Verify &amp; Save</strong>.</li>
+    </ol>
+    <div class="field-group">
+      <label for="input-token">coulomb_sess cookie value</label>
+      <input type="password" id="input-token" placeholder="Paste cookie value here" />
+    </div>
+    <button class="btn-primary" onclick="verifyToken()">Verify &amp; Save</button>
+    <div id="token-error" style="margin-top:8px;"></div>
+  </div>
+</div>
+
+<!-- CAPTCHA_STILL_BLOCKED -->
+<div id="state-captcha-still" class="state">
+  <p class="status-err">&#10007; Still blocked. Please use the manual login below.</p>
+  <div class="section">
+    <p><strong>Manual login:</strong></p>
+    <ol>
+      <li>Click <a href="https://driver.chargepoint.com" target="_blank" rel="noopener">Open ChargePoint in a new tab</a> and log in.</li>
+      <li>Press <strong>F12</strong> (or <strong>Cmd &#8997; I</strong> on Mac).</li>
+      <li>Go to <strong>Application</strong> &#8594; <strong>Storage</strong> &#8594; <strong>Cookies</strong> &#8594; <code>https://driver.chargepoint.com</code>.</li>
+      <li>Find <strong><code>coulomb_sess</code></strong> and copy the entire value.</li>
+      <li>Paste below and click <strong>Verify &amp; Save</strong>.</li>
+    </ol>
+    <div class="field-group">
+      <label for="input-token2">coulomb_sess cookie value</label>
+      <input type="password" id="input-token2" placeholder="Paste cookie value here" />
+    </div>
+    <button class="btn-primary" onclick="verifyToken2()">Verify &amp; Save</button>
+    <div id="token2-error" style="margin-top:8px;"></div>
+  </div>
+</div>
+
+<!-- VALIDATING -->
+<div id="state-validating" class="state">
+  <p class="loading-spinner">Verifying token&#8230;</p>
+</div>
+
+<script>
+  let _username = '';
+  let _password = '';
+  let _captchaUrl = '';
+
+  function showState(name) {
+    document.querySelectorAll('.state').forEach(el => el.classList.remove('active'));
+    const el = document.getElementById('state-' + name);
+    if (el) el.classList.add('active');
+  }
+
+  async function init() {
+    // Pre-fill username from config
+    try {
+      const configs = await window.homebridge.getPluginConfig();
+      const cfg = configs && configs[0];
+      if (cfg && cfg.username) {
+        _username = cfg.username;
+        document.getElementById('input-username').value = _username;
+      }
+    } catch (e) { /* ignore */ }
+
+    // Check current auth status
+    const resp = await window.homebridge.request('/auth/status');
+    if (resp.state === 'connected') {
+      document.getElementById('connected-username').textContent = resp.username || '';
+      document.getElementById('connected-last-refresh').textContent = resp.lastRefresh
+        ? new Date(resp.lastRefresh).toLocaleString()
+        : 'unknown';
+      showState('connected');
+    } else if (resp.state === 'captcha_blocked') {
+      showState('captcha');
+    } else {
+      showState('disconnected');
+    }
+  }
+
+  async function connect() {
+    _username = document.getElementById('input-username').value.trim();
+    _password = document.getElementById('input-password').value;
+    if (!_username || !_password) return;
+
+    showState('connecting');
+    const resp = await window.homebridge.request('/auth/login', { username: _username, password: _password });
+    if (resp.state === 'connected') {
+      document.getElementById('connected-username').textContent = resp.username || _username;
+      document.getElementById('connected-last-refresh').textContent = new Date().toLocaleString();
+      showState('connected');
+    } else if (resp.state === 'captcha') {
+      _captchaUrl = resp.captchaUrl || '';
+      document.getElementById('btn-open-captcha').style.display = _captchaUrl ? '' : 'none';
+      showState('captcha');
+    } else {
+      document.getElementById('error-message').textContent = resp.message || 'Unknown error.';
+      showState('error');
+    }
+  }
+
+  function openCaptcha() {
+    if (_captchaUrl) window.open(_captchaUrl, '_blank');
+  }
+
+  async function retryCaptcha() {
+    showState('connecting');
+    const resp = await window.homebridge.request('/auth/retry', { username: _username, password: _password });
+    if (resp.state === 'connected') {
+      document.getElementById('connected-username').textContent = resp.username || _username;
+      document.getElementById('connected-last-refresh').textContent = new Date().toLocaleString();
+      showState('connected');
+    } else if (resp.state === 'captcha') {
+      showState('captcha-still');
+    } else {
+      document.getElementById('error-message').textContent = resp.message || 'Unknown error.';
+      showState('error');
+    }
+  }
+
+  async function verifyToken() {
+    const token = document.getElementById('input-token').value.trim();
+    if (!token) return;
+    document.getElementById('token-error').textContent = '';
+    showState('validating');
+    const resp = await window.homebridge.request('/auth/validate-token', { username: _username, token });
+    if (resp.state === 'connected') {
+      document.getElementById('connected-username').textContent = resp.username || _username;
+      document.getElementById('connected-last-refresh').textContent = new Date().toLocaleString();
+      showState('connected');
+    } else {
+      // Return to captcha state and show error inline
+      showState('captcha');
+      document.getElementById('token-error').textContent = resp.message || 'Invalid token.';
+      document.getElementById('token-error').style.color = '#d93025';
+    }
+  }
+
+  async function verifyToken2() {
+    const token = document.getElementById('input-token2').value.trim();
+    if (!token) return;
+    document.getElementById('token2-error').textContent = '';
+    showState('validating');
+    const resp = await window.homebridge.request('/auth/validate-token', { username: _username, token });
+    if (resp.state === 'connected') {
+      document.getElementById('connected-username').textContent = resp.username || _username;
+      document.getElementById('connected-last-refresh').textContent = new Date().toLocaleString();
+      showState('connected');
+    } else {
+      showState('captcha-still');
+      document.getElementById('token2-error').textContent = resp.message || 'Invalid token.';
+      document.getElementById('token2-error').style.color = '#d93025';
+    }
+  }
+
+  async function disconnect() {
+    await window.homebridge.request('/auth/clear');
+    showState('disconnected');
+  }
+
+  init();
+</script>
+</body>
+</html>
