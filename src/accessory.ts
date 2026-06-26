@@ -18,6 +18,7 @@ import fakegato = require('fakegato-history');
 export interface AccessoryContext {
   chargerId: number;
   displayName: string;
+  lastBackfilledSessionId?: number;
 }
 
 export class ChargePointAccessory {
@@ -42,7 +43,10 @@ export class ChargePointAccessory {
   private lifetimeKwh = 0;
 
   private historyService: InstanceType<ReturnType<typeof fakegato>>;
-  private _lastBackfilledSessionId: number | null = null;
+  private _lastBackfilledSessionId: number | null;
+  private _lastIdleHistoryTime = 0;
+  private _lastStoredHistoryPower = 0;
+  private static readonly IDLE_HISTORY_INTERVAL_MS = 10 * 60 * 1000;
 
   constructor(
     private readonly api: API,
@@ -50,7 +54,9 @@ export class ChargePointAccessory {
     private readonly platformAccessory: PlatformAccessory,
     private readonly client: ChargePointClient,
   ) {
-    this.chargerId = (platformAccessory.context as AccessoryContext).chargerId;
+    const context = platformAccessory.context as AccessoryContext;
+    this.chargerId = context.chargerId;
+    this._lastBackfilledSessionId = context.lastBackfilledSessionId ?? null;
     const eve = buildEveCharacteristics(api.hap);
 
     // Outlet service (Eve Energy)
@@ -74,6 +80,7 @@ export class ChargePointAccessory {
     this.historyService = new FakeGatoHistoryService('energy', platformAccessory, {
       size: 4032,
       storage: 'fs',
+      disableTimer: true,
     });
   }
 
@@ -167,15 +174,25 @@ export class ChargePointAccessory {
         });
       }
       this._lastBackfilledSessionId = session.session_id;
+      (this.platformAccessory.context as AccessoryContext).lastBackfilledSessionId = session.session_id;
     }
 
-    // Add current reading
+    // Add current reading — charging entries stored every poll; idle (0W) entries throttled to
+    // 10-minute intervals to avoid flooding the history buffer with redundant zeros.
     const isCharging = this.status?.charging_status === 'CHARGING';
     const powerKw = isCharging ? (session?.power_kw ?? 0) : 0;
-    this.historyService.addEntry({
-      time: Math.round(Date.now() / 1000),
-      power: safeW(powerKw),
-    });
+    const powerW = safeW(powerKw);
+    const now = Date.now();
+    const chargingJustEnded = this._lastStoredHistoryPower > 0 && powerW === 0;
+
+    if (powerW > 0 || chargingJustEnded || (now - this._lastIdleHistoryTime >= ChargePointAccessory.IDLE_HISTORY_INTERVAL_MS)) {
+      this.historyService.addEntry({
+        time: Math.round(now / 1000),
+        power: powerW,
+      });
+      if (powerW === 0) this._lastIdleHistoryTime = now;
+      this._lastStoredHistoryPower = powerW;
+    }
   }
 
   markNoResponse(): void {

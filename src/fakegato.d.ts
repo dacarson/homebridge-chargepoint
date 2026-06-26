@@ -11,6 +11,7 @@ declare module 'fakegato-history' {
     storage?: 'fs' | 'googleDrive';
     path?: string;
     filename?: string;
+    disableTimer?: boolean;
   }
 
   class FakeGatoHistoryService {
