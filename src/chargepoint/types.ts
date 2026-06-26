@@ -22,6 +22,12 @@ export interface UserChargingStatus {
   stations: Array<{ id: number }>;
 }
 
+export interface UpdateDataPoint {
+  energy_kwh: number;
+  power_kw: number;
+  timestamp: number; // milliseconds
+}
+
 export interface ChargingSession {
   session_id: number;
   device_id: number;
@@ -29,4 +35,6 @@ export interface ChargingSession {
   power_kw: number;
   energy_kwh: number;
   charging_state: string;
+  update_data: UpdateDataPoint[];
 }
+

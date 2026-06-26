@@ -15,8 +15,7 @@
     "skipLibCheck": true
   },
   "include": [
-    "src/**/*.ts",
-    "homebridge-ui/server.ts"
+    "src/**/*.ts"
   ],
   "exclude": [
     "node_modules",

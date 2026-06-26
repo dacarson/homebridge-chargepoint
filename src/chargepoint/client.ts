@@ -24,10 +24,6 @@ import {
 } from './errors';
 import { saveToken } from '../tokenStore';
 
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
 export class ChargePointClient {
   private jar: CookieJar;
   private http: AxiosInstance;
@@ -35,6 +31,7 @@ export class ChargePointClient {
   private userId?: number;
   private username: string;
   private readonly log: Logger;
+  private _token: string | undefined;
 
   constructor(username: string, log: Logger) {
     this.username = username;
@@ -45,26 +42,34 @@ export class ChargePointClient {
   }
 
   getCoulombToken(): string | undefined {
-    const cookies = this.jar.getCookiesSync(`https://account${COOKIE_DOMAIN}/`);
-    return cookies.find(c => c.key === COULOMB_SESSION)?.value;
+    // Prefer the jar (picks up tokens set by server response cookies); fall back to
+    // the cached value from setCoulombToken when the jar domain-match fails.
+    const fromJar = this.jar.getCookiesSync(`https://account${COOKIE_DOMAIN}/`)
+      .find(c => c.key === COULOMB_SESSION)?.value;
+    return fromJar ?? this._token;
   }
 
   setCoulombToken(token: string): void {
+    this._token = token;
     const cookie = new Cookie({
       key: COULOMB_SESSION,
       value: token,
-      domain: COOKIE_DOMAIN,
+      domain: COOKIE_DOMAIN.replace(/^\./, ''),
       path: '/',
       maxAge: COULOMB_SESSION_MAX_AGE,
     });
-    this.jar.setCookieSync(cookie, `https://account${COOKIE_DOMAIN}/`);
+    const cookieUrl = `https://account${COOKIE_DOMAIN}/`;
+    this.jar.setCookieSync(cookie, cookieUrl);
+    this.log.debug(`setCoulombToken: prefix=${token.slice(0, 8)}…`);
   }
 
   private _persistToken(): void {
-    const token = this.getCoulombToken();
-    if (token) {
-      this.setCoulombToken(token);
-      saveToken(token).catch(() => {/* background save — errors are non-fatal */});
+    // Only read directly from the jar to detect server-issued token refreshes.
+    const fromJar = this.jar.getCookiesSync(`https://account${COOKIE_DOMAIN}/`)
+      .find(c => c.key === COULOMB_SESSION)?.value;
+    if (fromJar && fromJar !== this._token) {
+      this._token = fromJar;
+      saveToken(fromJar).catch(() => {/* background save — errors are non-fatal */});
     }
   }
 
@@ -105,6 +110,8 @@ export class ChargePointClient {
     this._persistToken();
 
     if (response.status === 401) {
+      this.log.debug(`401 from ${url} — body: ${JSON.stringify(response.data)}`);
+      this.log.debug(`Cookies sent to ${url}: ${this.jar.getCookiesSync(url).map(c => `${c.key}=${c.value.slice(0, 8)}…`).join(', ')}`);
       throw new InvalidSession(401, 'Session token has expired. Please login again.');
     }
     if (response.status === 403) {
@@ -178,13 +185,16 @@ export class ChargePointClient {
 
   async getAccount(): Promise<{ userId: number; username: string }> {
     const url = `${this.globalConfig.endpoints.accounts_endpoint}v1/driver/profile/user`;
+    this.log.debug(`getAccount: calling ${url}`);
     const response = await this._request('GET', url);
     this._raiseForStatus(response, 'Failed to get user information.');
     const d = response.data;
-    return {
+    const result = {
       userId: d?.user?.userId ?? 0,
       username: d?.user?.username ?? '',
     };
+    this.userId = result.userId;
+    return result;
   }
 
   // ── Home Charger ──────────────────────────────────────────────────────────
@@ -193,6 +203,7 @@ export class ChargePointClient {
     const url = `${this.globalConfig.endpoints.hcpo_hcm_endpoint}api/v1/configuration/users/${this.userId}/chargers`;
     const response = await this._request('GET', url);
     this._raiseForStatus(response, 'Failed to retrieve Home Flex chargers.');
+    this.log.debug(`home chargers raw: ${JSON.stringify(response.data)}`);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return ((response.data?.data ?? []) as any[]).map(item => parseInt(item.id, 10));
   }
@@ -201,6 +212,7 @@ export class ChargePointClient {
     const url = `${this.globalConfig.endpoints.hcpo_hcm_endpoint}api/v1/configuration/users/${this.userId}/chargers/${chargerId}/status`;
     const response = await this._request('GET', url);
     this._raiseForStatus(response, 'Failed to get home charger status.');
+    this.log.debug(`[${chargerId}] status raw: ${JSON.stringify(response.data)}`);
     const d = response.data ?? {};
     const amp = d.chargeAmperageSettings ?? {};
     return {
@@ -235,109 +247,45 @@ export class ChargePointClient {
     };
   }
 
-  // ── Charging Session ──────────────────────────────────────────────────────
-
   async getUserChargingStatus(): Promise<UserChargingStatus | null> {
     const url = `${this.globalConfig.endpoints.mapcache_endpoint}v2`;
     const response = await this._request('POST', url, { user_status: { mfhs: {} } });
     this._raiseForStatus(response, 'Failed to get user charging status.');
-    const userStatus = response.data?.user_status;
-    if (!userStatus || Object.keys(userStatus as object).length === 0) {
-      return null;
-    }
-    const charging = (userStatus as Record<string, unknown>).charging ?? userStatus;
-    const c = charging as Record<string, unknown>;
-    return {
-      session_id: (c.sessionId as number) ?? 0,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      stations: ((c.stations ?? []) as any[]).map(s => ({ id: s.deviceId ?? s.id ?? 0 })),
-    };
+    this.log.debug(`user charging status raw: ${JSON.stringify(response.data)}`);
+    const d = response.data?.user_status;
+    if (!d || !d.sessionId) return null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const stations = ((d.stations ?? []) as any[]).map((s: any) => ({ id: Number(s.deviceId ?? 0) }));
+    return { session_id: Number(d.sessionId), stations };
   }
 
-  async getChargingSession(sessionId: number): Promise<ChargingSession> {
-    const url = `${this.globalConfig.endpoints.internal_api_gateway_endpoint}/driver-bff/v1/sessions/${sessionId}`;
-    const response = await this._request(
-      'POST',
-      url,
-      { charging_status: { session_id: sessionId, mfhs: [] } },
-    );
-    this._raiseForStatus(response, 'Failed to get charging session data.');
-    const status = response.data?.charging_status as Record<string, unknown>;
-    if (!status || 'error_message' in status || 'error' in status) {
-      throw new CommunicationError(response.status, 'Failed to get charging session data.');
-    }
+  async getChargingSession(sessionId: number): Promise<ChargingSession | null> {
+    const url = `${this.globalConfig.endpoints.internal_api_gateway_endpoint}driver-bff/v1/sessions/${sessionId}`;
+    const response = await this._request('POST', url, { charging_status: { session_id: sessionId, mfhs: [] } });
+    this._raiseForStatus(response, 'Failed to get charging session.');
+    this.log.debug(`charging session raw: ${JSON.stringify(response.data)}`);
+    const d = response.data?.charging_status;
+    if (!d || d.error_message || d.error) return null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rawPoints: any[] = Array.isArray(d.update_data) ? d.update_data : [];
     return {
       session_id: sessionId,
-      device_id: (status.device_id as number) ?? 0,
-      outlet_number: (status.outlet_number as number) ?? 0,
-      power_kw: (status.power_kw as number) ?? 0,
-      energy_kwh: (status.energy_kwh as number) ?? 0,
-      charging_state: (status.current_charging ?? status.charging_state ?? '') as string,
+      device_id: Number(d.device_id ?? 0),
+      outlet_number: Number(d.outlet_number ?? 0),
+      power_kw: Number(d.power_kw ?? 0),
+      energy_kwh: Number(d.energy_kwh ?? 0),
+      charging_state: String(d.current_charging ?? ''),
+      update_data: rawPoints.map(p => ({
+        energy_kwh: Number(p.energy_kwh ?? 0),
+        power_kw: Number(p.power_kw ?? 0),
+        timestamp: Number(p.timestamp ?? 0),
+      })),
     };
-  }
-
-  async startChargingSessionAsync(deviceId: number): Promise<ChargingSession> {
-    await this._sendCommand('start', deviceId);
-    const status = await this.getUserChargingStatus();
-    if (!status) {
-      throw new CommunicationError(0, 'No active charging session found after start command.');
-    }
-    return this.getChargingSession(status.session_id);
-  }
-
-  async stopChargingSessionAsync(
-    deviceId: number,
-    portNumber: number,
-    sessionId: number,
-  ): Promise<void> {
-    await this._sendCommand('stop', deviceId, portNumber, sessionId);
   }
 
   async setAmperageLimit(chargerId: number, amps: number): Promise<void> {
     const url = `${this.globalConfig.endpoints.hcpo_hcm_endpoint}api/v1/configuration/chargers/${chargerId}/charge-amperage-limit`;
     const response = await this._request('PUT', url, { chargeAmperageLimit: amps });
     this._raiseForStatus(response, 'Failed to set amperage limit.');
-  }
-
-  // ── Session Start/Stop Command + Ack Loop ─────────────────────────────────
-
-  private async _sendCommand(
-    action: 'start' | 'stop',
-    deviceId: number,
-    portNumber = 1,
-    sessionId = 0,
-  ): Promise<void> {
-    const actionPath = action === 'start' ? 'startsession' : 'stopSession';
-    const url = `${this.globalConfig.endpoints.accounts_endpoint}v1/driver/station/${actionPath}`;
-
-    const body: Record<string, unknown> = { deviceId };
-    if (action === 'stop') {
-      body.portNumber = portNumber;
-      body.sessionId = sessionId;
-    }
-
-    const cmdResponse = await this._request('POST', url, body);
-    if (cmdResponse.status !== 200) {
-      throw new CommunicationError(cmdResponse.status, `Failed to ${action} session.`);
-    }
-
-    const ackId = (cmdResponse.data as Record<string, unknown>)?.ackId;
-    const ackUrl = `${this.globalConfig.endpoints.accounts_endpoint}v1/driver/station/session/ack`;
-    const ackBody = { ackId, action: `${action}_session` };
-
-    for (let attempt = 1; attempt <= 20; attempt++) {
-      this.log.debug(`Checking ${action} ack (attempt ${attempt}/20) ackId=${String(ackId)}`);
-      const ackResponse = await this._request('POST', ackUrl, ackBody);
-      if (ackResponse.status === 200) {
-        this.log.info(`Successfully confirmed ${action} command.`);
-        return;
-      }
-      const errMsg = (ackResponse.data as Record<string, unknown>)?.errorMessage ?? `Session failed to ${action}.`;
-      this.log.warn(`${action} ack not confirmed (attempt ${attempt}/20): ${String(errMsg)}`);
-      if (attempt < 20) {
-        await sleep(3000);
-      }
-    }
-    throw new CommunicationError(0, `Failed to confirm ${action} after 20 attempts.`);
   }
 }

@@ -19,6 +19,11 @@
         "title": "ChargePoint Password",
         "type": "string"
       },
+      "sessionToken": {
+        "title": "Session Token (optional — paste coulomb_sess cookie to bypass login)",
+        "description": "If login is blocked by bot-protection: log into driver.chargepoint.com in your browser, open DevTools → Application → Cookies → https://driver.chargepoint.com, copy the value of the coulomb_sess cookie, and paste it here.",
+        "type": "string"
+      },
       "pollingIntervalSeconds": {
         "title": "Status Poll Interval (seconds)",
         "type": "integer",

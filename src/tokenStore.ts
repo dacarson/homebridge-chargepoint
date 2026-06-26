@@ -1,7 +1,6 @@
 import storage from 'node-persist';
 
 const TOKEN_KEY = 'coulomb_token';
-export const CAPTCHA_FLAG = 'captcha_blocked';
 
 let _initialized = false;
 let _cachedToken: string | undefined;
@@ -28,21 +27,6 @@ export async function clearToken(): Promise<void> {
   if (_initialized) {
     await storage.removeItem(TOKEN_KEY);
   }
-}
-
-export async function getFlag(key: string): Promise<boolean> {
-  if (!_initialized) return false;
-  return (await storage.getItem(key)) === true;
-}
-
-export async function saveFlag(key: string, value: boolean): Promise<void> {
-  if (!_initialized) return;
-  await storage.setItem(key, value);
-}
-
-export async function clearFlag(key: string): Promise<void> {
-  if (!_initialized) return;
-  await storage.removeItem(key);
 }
 
 export async function loadLifetimeKwh(chargerId: number): Promise<number> {

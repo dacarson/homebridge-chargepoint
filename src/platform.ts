@@ -7,15 +7,13 @@ import type {
 } from 'homebridge';
 import { ChargePointClient } from './chargepoint/client';
 import { ChargePointAccessory, AccessoryContext } from './accessory';
+import type { UserChargingStatus, ChargingSession } from './chargepoint/types';
 import { DatadomeCaptcha, InvalidSession, CommunicationError } from './chargepoint/errors';
 import {
   initStore,
   loadToken,
   saveToken,
   clearToken,
-  saveFlag,
-  clearFlag,
-  CAPTCHA_FLAG,
 } from './tokenStore';
 
 const PLUGIN_NAME = 'homebridge-chargepoint';
@@ -24,6 +22,7 @@ const PLATFORM_NAME = 'ChargePoint';
 interface ChargePointPlatformConfig extends PlatformConfig {
   username: string;
   password: string;
+  sessionToken?: string;
   pollingIntervalSeconds?: number;
   devices?: Array<{ chargerId: number; name?: string }>;
 }
@@ -33,7 +32,6 @@ export class ChargePointPlatform implements DynamicPlatformPlugin {
   private readonly cachedPlatformAccessories: PlatformAccessory[] = [];
   private client!: ChargePointClient;
   private pollTimer?: ReturnType<typeof setTimeout>;
-  private rapidRefreshRemaining = 0;
   private captchaBackoffUntil = 0;
   private authBackoffUntil = 0;
 
@@ -76,14 +74,30 @@ export class ChargePointPlatform implements DynamicPlatformPlugin {
     // 1. Always discover region first
     await this.client.discoverRegion(this.config.username);
 
-    // 2. Try stored token
+    // 2. Config-provided session token — bypasses password login (Datadome workaround)
+    if (this.config.sessionToken) {
+      this.log.debug(`Using config sessionToken (length=${this.config.sessionToken.length}, prefix=${this.config.sessionToken.slice(0, 8)}…)`);
+      this.client.setCoulombToken(this.config.sessionToken);
+      try {
+        const account = await this.client.getAccount();
+        this.log.info(`Authenticated as ${account.username} (config sessionToken)`);
+        return;
+      } catch (err) {
+        if (err instanceof InvalidSession) {
+          this.log.warn('Config sessionToken is expired — falling through to stored token / password.');
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    // 3. Try stored token
     const storedToken = await loadToken();
     if (storedToken) {
       this.client.setCoulombToken(storedToken);
       try {
         const account = await this.client.getAccount();
         this.log.info(`Authenticated as ${account.username} (stored token)`);
-        await clearFlag(CAPTCHA_FLAG);
         return;
       } catch (err) {
         if (err instanceof InvalidSession) {
@@ -95,7 +109,7 @@ export class ChargePointPlatform implements DynamicPlatformPlugin {
       }
     }
 
-    // 3. Password login
+    // 4. Password login
     await this._passwordLogin();
   }
 
@@ -104,13 +118,11 @@ export class ChargePointPlatform implements DynamicPlatformPlugin {
       await this.client.loginWithPassword(this.config.password);
       const token = this.client.getCoulombToken();
       if (token) await saveToken(token);
-      await clearFlag(CAPTCHA_FLAG);
       this.log.info('Authenticated with password.');
     } catch (err) {
       if (err instanceof DatadomeCaptcha) {
-        await saveFlag(CAPTCHA_FLAG, true);
         this.log.error(`Login blocked by Datadome. Solve captcha at: ${err.captchaUrl}`);
-        this.log.error('Open the Setup tab in Config UI X to recover.');
+        this.log.error('Add the coulomb_sess cookie value as "sessionToken" in the plugin config to recover.');
         throw err;
       }
       throw err;
@@ -164,7 +176,6 @@ export class ChargePointPlatform implements DynamicPlatformPlugin {
       this.log,
       platformAccessory,
       this.client,
-      () => this.scheduleRapidRefresh(),
     );
 
     // Populate static info (model, serial, firmware)
@@ -201,79 +212,77 @@ export class ChargePointPlatform implements DynamicPlatformPlugin {
   // ── Polling ───────────────────────────────────────────────────────────────
 
   private _startPolling(): void {
-    this._scheduleNextPoll();
+    // Fire immediately so characteristics have real values before HomeKit reads them,
+    // then _pollCycle self-schedules each subsequent poll.
+    void this._pollCycle();
   }
 
-  private _scheduleNextPoll(): void {
-    const interval = this._nextIntervalMs();
+  private _scheduleNextPoll(anyCharging = false): void {
+    const interval = this._nextIntervalMs(anyCharging);
     this.pollTimer = setTimeout(() => this._pollCycle(), interval);
   }
 
-  private _nextIntervalMs(): number {
+  private _nextIntervalMs(anyCharging = false): number {
     const now = Date.now();
-
-    if (now < this.captchaBackoffUntil) {
-      return Math.max(1000, this.captchaBackoffUntil - now);
-    }
-    if (now < this.authBackoffUntil) {
-      return Math.max(1000, this.authBackoffUntil - now);
-    }
-
-    for (const acc of this.accessories.values()) {
-      if (acc.commandInFlight) return 5000;
-    }
-
-    if (this.rapidRefreshRemaining > 0) {
-      this.rapidRefreshRemaining--;
-      return 5000;
-    }
-
-    for (const acc of this.accessories.values()) {
-      if (acc.isCharging) return 15000;
-    }
-
-    return (this.config.pollingIntervalSeconds ?? 30) * 1000;
-  }
-
-  scheduleRapidRefresh(): void {
-    this.rapidRefreshRemaining = 3;
+    if (now < this.captchaBackoffUntil) return Math.max(1000, this.captchaBackoffUntil - now);
+    if (now < this.authBackoffUntil) return Math.max(1000, this.authBackoffUntil - now);
+    const base = (this.config.pollingIntervalSeconds ?? 30) * 1000;
+    // Use 15 s while actively charging so power readings stay fresh
+    return anyCharging ? Math.min(15_000, base) : base;
   }
 
   private async _pollCycle(): Promise<void> {
+    let anyCharging = false;
+
+    // ── Phase 1: account-level charging status (once per cycle) ──────────────
+    let accountStatus: UserChargingStatus | null = null;
+    let activeSession: ChargingSession | null = null;
+
     try {
-      const accountStatus = await this.client.getUserChargingStatus();
-
-      for (const [chargerId, accessory] of this.accessories) {
-        const stationMatch = accountStatus?.stations.find(s => s.id === chargerId);
-        let sessionForCharger = null;
-
-        if (stationMatch && accountStatus) {
-          try {
-            sessionForCharger = await this.client.getChargingSession(accountStatus.session_id);
-          } catch (err) {
-            this.log.warn(`[${chargerId}] Could not get charging session: ${err}`);
-          }
-        }
-
-        try {
-          await accessory.refresh(sessionForCharger);
-        } catch (err) {
-          this.log.warn(`[${chargerId}] Refresh error: ${err}`);
-        }
+      accountStatus = await this.client.getUserChargingStatus();
+      if (accountStatus) {
+        activeSession = await this.client.getChargingSession(accountStatus.session_id);
       }
     } catch (err) {
       if (err instanceof InvalidSession) {
         await this._handleMidPollInvalidSession();
-      } else if (err instanceof DatadomeCaptcha) {
-        await this._handleDatadomeCaptcha(err);
-      } else if (err instanceof CommunicationError) {
-        this.log.warn(`Poll communication error: ${err.message}`);
-      } else {
-        this.log.error(`Poll error: ${err}`);
+        this._scheduleNextPoll();
+        return;
+      }
+      if (err instanceof DatadomeCaptcha) {
+        await this._handleDatadomeCaptcha(err as DatadomeCaptcha);
+        this._scheduleNextPoll();
+        return;
+      }
+      // Non-auth errors (network blip, 5xx): log and continue with null session
+      this.log.warn(`Poll: could not fetch charging status: ${err}`);
+    }
+
+    // ── Phase 2: per-accessory refresh ────────────────────────────────────────
+    for (const [chargerId, accessory] of this.accessories) {
+      try {
+        const stationMatch = accountStatus?.stations.find(s => s.id === chargerId);
+        const session = stationMatch ? activeSession : null;
+        await accessory.refresh(session);
+        if (session) anyCharging = true;
+      } catch (err) {
+        if (err instanceof InvalidSession) {
+          await this._handleMidPollInvalidSession();
+          break;
+        } else if (err instanceof DatadomeCaptcha) {
+          await this._handleDatadomeCaptcha(err as DatadomeCaptcha);
+          break;
+        } else if (err instanceof CommunicationError) {
+          this.log.warn(`[${chargerId}] Poll communication error: ${err.message}`);
+          accessory.markNoResponse();
+        } else {
+          this.log.warn(`[${chargerId}] Refresh error: ${err}`);
+          accessory.markNoResponse();
+        }
       }
     }
 
-    this._scheduleNextPoll();
+    this._scheduleNextPoll(anyCharging);
   }
 
   private async _handleMidPollInvalidSession(): Promise<void> {
@@ -283,7 +292,6 @@ export class ChargePointPlatform implements DynamicPlatformPlugin {
       await this.client.loginWithPassword(this.config.password);
       const token = this.client.getCoulombToken();
       if (token) await saveToken(token);
-      await clearFlag(CAPTCHA_FLAG);
       this.log.info('Re-authenticated successfully.');
     } catch (err) {
       if (err instanceof DatadomeCaptcha) {
@@ -298,9 +306,8 @@ export class ChargePointPlatform implements DynamicPlatformPlugin {
   }
 
   private async _handleDatadomeCaptcha(err: DatadomeCaptcha): Promise<void> {
-    await saveFlag(CAPTCHA_FLAG, true);
     this.log.error(`Blocked by Datadome. Solve captcha at: ${err.captchaUrl}`);
-    this.log.error('Open the Setup tab in Config UI X to recover. Plugin paused for 5 minutes.');
+    this.log.error('Add the coulomb_sess cookie value as "sessionToken" in the plugin config to recover.');
     this.captchaBackoffUntil = Date.now() + 5 * 60 * 1000;
     this._markAllNoResponse();
   }
