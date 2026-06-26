@@ -31,7 +31,7 @@ export class ChargePointPlatform implements DynamicPlatformPlugin {
   private readonly accessories = new Map<number, ChargePointAccessory>();
   private readonly cachedPlatformAccessories: PlatformAccessory[] = [];
   private client!: ChargePointClient;
-  private pollTimer?: ReturnType<typeof setTimeout>;
+
   private captchaBackoffUntil = 0;
   private authBackoffUntil = 0;
 
@@ -71,37 +71,24 @@ export class ChargePointPlatform implements DynamicPlatformPlugin {
   }
 
   private async _authFlow(): Promise<void> {
-    // 1. Always discover region first
     await this.client.discoverRegion(this.config.username);
 
-    // 2. Config-provided session token — bypasses password login (Datadome workaround)
-    if (this.config.sessionToken) {
-      this.log.debug(`Using config sessionToken (length=${this.config.sessionToken.length}, prefix=${this.config.sessionToken.slice(0, 8)}…)`);
-      this.client.setCoulombToken(this.config.sessionToken);
+    // Prefer an existing coulomb_sess token: validate it against a non-Datadome
+    // endpoint rather than hitting the Datadome-protected login route on every
+    // start. Config sessionToken is an explicit override and takes priority over
+    // the auto-saved token.
+    const preToken = this.config.sessionToken ?? await loadToken();
+    if (preToken) {
+      this.client.setCoulombToken(preToken);
       try {
-        const account = await this.client.getAccount();
-        this.log.info(`Authenticated as ${account.username} (config sessionToken)`);
+        await this.client.getAccount();
+        const token = this.client.getCoulombToken();
+        if (token) await saveToken(token);
+        this.log.info('Authenticated with existing session token.');
         return;
       } catch (err) {
         if (err instanceof InvalidSession) {
-          this.log.warn('Config sessionToken is expired — falling through to stored token / password.');
-        } else {
-          throw err;
-        }
-      }
-    }
-
-    // 3. Try stored token
-    const storedToken = await loadToken();
-    if (storedToken) {
-      this.client.setCoulombToken(storedToken);
-      try {
-        const account = await this.client.getAccount();
-        this.log.info(`Authenticated as ${account.username} (stored token)`);
-        return;
-      } catch (err) {
-        if (err instanceof InvalidSession) {
-          this.log.warn('Stored token expired, re-authenticating with password.');
+          this.log.warn('Saved session token is invalid — falling back to password login.');
           await clearToken();
         } else {
           throw err;
@@ -109,7 +96,6 @@ export class ChargePointPlatform implements DynamicPlatformPlugin {
       }
     }
 
-    // 4. Password login
     await this._passwordLogin();
   }
 
@@ -219,7 +205,7 @@ export class ChargePointPlatform implements DynamicPlatformPlugin {
 
   private _scheduleNextPoll(anyCharging = false): void {
     const interval = this._nextIntervalMs(anyCharging);
-    this.pollTimer = setTimeout(() => this._pollCycle(), interval);
+    setTimeout(() => this._pollCycle(), interval);
   }
 
   private _nextIntervalMs(anyCharging = false): number {
@@ -240,7 +226,7 @@ export class ChargePointPlatform implements DynamicPlatformPlugin {
 
     try {
       accountStatus = await this.client.getUserChargingStatus();
-      if (accountStatus) {
+      if (accountStatus && accountStatus.session_id !== null) {
         activeSession = await this.client.getChargingSession(accountStatus.session_id);
       }
     } catch (err) {

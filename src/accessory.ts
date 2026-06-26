@@ -127,12 +127,26 @@ export class ChargePointAccessory {
 
   private _updateCharacteristics(): void {
     const isCharging = this.status?.charging_status === 'CHARGING';
-    const powerKw = isCharging ? (this.session?.power_kw ?? 0) : 0;
+    let powerKw = 0;
+    let powerSource = 'none';
+    if (isCharging) {
+      if (this.session !== null && this.session.power_kw > 0) {
+        // Prefer actual session measurement; fall back to last update_data point (matches Python "in_use" logic)
+        const lastPoint = this.session.update_data.at(-1);
+        powerKw = (lastPoint && lastPoint.power_kw > 0) ? lastPoint.power_kw : this.session.power_kw;
+        powerSource = 'session';
+      } else if ((this.status?.amperage_limit ?? 0) > 0) {
+        // No cloud session available (scheduled/home-flex charging) — estimate from amperage limit.
+        // This matches the Python script's "waiting" state fallback: amperage_limit * 240V / 1000.
+        powerKw = (this.status!.amperage_limit * 240) / 1000;
+        powerSource = 'amperage-estimate';
+      }
+    }
     const powerW = safeW(powerKw);
     const currentA = safeA(powerKw);
 
     this.log.debug(
-      `[${this.chargerId}] isCharging=${isCharging} powerKw=${powerKw} powerW=${powerW} currentA=${currentA} lifetimeKwh=${this.lifetimeKwh}`,
+      `[${this.chargerId}] isCharging=${isCharging} powerSource=${powerSource} powerKw=${powerKw} powerW=${powerW} currentA=${currentA} lifetimeKwh=${this.lifetimeKwh}`,
     );
 
     this.charOn.updateValue(isCharging);

@@ -42,30 +42,28 @@ export class ChargePointClient {
   }
 
   getCoulombToken(): string | undefined {
-    // Prefer the jar (picks up tokens set by server response cookies); fall back to
-    // the cached value from setCoulombToken when the jar domain-match fails.
-    const fromJar = this.jar.getCookiesSync(`https://account${COOKIE_DOMAIN}/`)
+    const fromJar = this.jar.getCookiesSync(`https://${COOKIE_DOMAIN.replace(/^\./, '')}/`)
       .find(c => c.key === COULOMB_SESSION)?.value;
     return fromJar ?? this._token;
   }
 
   setCoulombToken(token: string): void {
-    this._token = token;
+    const decoded = decodeURIComponent(token);
+    this._token = decoded;
     const cookie = new Cookie({
       key: COULOMB_SESSION,
-      value: token,
+      value: decoded,
       domain: COOKIE_DOMAIN.replace(/^\./, ''),
       path: '/',
       maxAge: COULOMB_SESSION_MAX_AGE,
+      hostOnly: false,
     });
-    const cookieUrl = `https://account${COOKIE_DOMAIN}/`;
-    this.jar.setCookieSync(cookie, cookieUrl);
-    this.log.debug(`setCoulombToken: prefix=${token.slice(0, 8)}…`);
+    this.jar.setCookieSync(cookie, `https://${COOKIE_DOMAIN.replace(/^\./, '')}/`);
+    this.log.debug(`setCoulombToken: prefix=${decoded.slice(0, 8)}…`);
   }
 
   private _persistToken(): void {
-    // Only read directly from the jar to detect server-issued token refreshes.
-    const fromJar = this.jar.getCookiesSync(`https://account${COOKIE_DOMAIN}/`)
+    const fromJar = this.jar.getCookiesSync(`https://${COOKIE_DOMAIN.replace(/^\./, '')}/`)
       .find(c => c.key === COULOMB_SESSION)?.value;
     if (fromJar && fromJar !== this._token) {
       this._token = fromJar;
@@ -90,13 +88,16 @@ export class ChargePointClient {
     method: string,
     url: string,
     data?: unknown,
+    headers?: Record<string, string>,
   ): Promise<AxiosResponse> {
-    this.log.debug(`[${method}] ${url}`);
+    const reqHeaders = headers ?? this._headers();
+    if (data !== undefined) reqHeaders['content-type'] = 'application/json';
+
     const response = await this.http.request({
       method,
       url,
       data,
-      headers: this._headers(),
+      headers: reqHeaders,
       validateStatus: () => true,
       // Always attempt JSON parsing regardless of content-type
       transformResponse: [
@@ -108,10 +109,9 @@ export class ChargePointClient {
     });
 
     this._persistToken();
+    this.log.debug(`[${method}] ${url} → ${response.status}`);
 
     if (response.status === 401) {
-      this.log.debug(`401 from ${url} — body: ${JSON.stringify(response.data)}`);
-      this.log.debug(`Cookies sent to ${url}: ${this.jar.getCookiesSync(url).map(c => `${c.key}=${c.value.slice(0, 8)}…`).join(', ')}`);
       throw new InvalidSession(401, 'Session token has expired. Please login again.');
     }
     if (response.status === 403) {
@@ -145,24 +145,7 @@ export class ChargePointClient {
   async loginWithPassword(password: string): Promise<void> {
     const url = `${this.globalConfig.endpoints.sso_endpoint}v1/user/login`;
     this.log.debug(`Logging in as ${this.username}`);
-    // Don't use _request here — we need raw 403 handling before the throw
-    const response = await this.http.request({
-      method: 'POST',
-      url,
-      data: { username: this.username, password },
-      headers: { 'user-agent': 'homebridge-chargepoint/1.0.0' },
-      validateStatus: () => true,
-      transformResponse: [
-        (raw: unknown) => {
-          if (typeof raw !== 'string') return raw;
-          try { return JSON.parse(raw); } catch { return raw; }
-        },
-      ],
-    });
-
-    if (response.status === 403 && response.data?.url) {
-      throw new DatadomeCaptcha(String(response.data.url), 'Login blocked by Datadome captcha.');
-    }
+    const response = await this._request('POST', url, { username: this.username, password }, { 'user-agent': 'homebridge-chargepoint/1.0.0' });
     if (response.status === 200 && this.getCoulombToken()) {
       this._persistToken();
       await this._initAccountParameters();
@@ -203,7 +186,6 @@ export class ChargePointClient {
     const url = `${this.globalConfig.endpoints.hcpo_hcm_endpoint}api/v1/configuration/users/${this.userId}/chargers`;
     const response = await this._request('GET', url);
     this._raiseForStatus(response, 'Failed to retrieve Home Flex chargers.');
-    this.log.debug(`home chargers raw: ${JSON.stringify(response.data)}`);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return ((response.data?.data ?? []) as any[]).map(item => parseInt(item.id, 10));
   }
@@ -212,7 +194,6 @@ export class ChargePointClient {
     const url = `${this.globalConfig.endpoints.hcpo_hcm_endpoint}api/v1/configuration/users/${this.userId}/chargers/${chargerId}/status`;
     const response = await this._request('GET', url);
     this._raiseForStatus(response, 'Failed to get home charger status.');
-    this.log.debug(`[${chargerId}] status raw: ${JSON.stringify(response.data)}`);
     const d = response.data ?? {};
     const amp = d.chargeAmperageSettings ?? {};
     return {
@@ -251,19 +232,22 @@ export class ChargePointClient {
     const url = `${this.globalConfig.endpoints.mapcache_endpoint}v2`;
     const response = await this._request('POST', url, { user_status: { mfhs: {} } });
     this._raiseForStatus(response, 'Failed to get user charging status.');
-    this.log.debug(`user charging status raw: ${JSON.stringify(response.data)}`);
-    const d = response.data?.user_status;
-    if (!d || !d.sessionId) return null;
+    const userStatus = response.data?.user_status;
+    if (!userStatus || Object.keys(userStatus).length === 0) return null;
+    // The API wraps session fields under a "charging" key when a session is active.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const stations = ((d.stations ?? []) as any[]).map((s: any) => ({ id: Number(s.deviceId ?? 0) }));
-    return { session_id: Number(d.sessionId), stations };
+    const d: any = userStatus.charging ?? userStatus;
+    const sessionId = d.sessionId != null ? Number(d.sessionId) : null;
+    const state: string = d.state ?? '';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const stations = (Array.isArray(d.stations) ? d.stations : []).map((s: any) => ({ id: Number(s.deviceId ?? 0) }));
+    return { session_id: sessionId, state, stations };
   }
 
   async getChargingSession(sessionId: number): Promise<ChargingSession | null> {
-    const url = `${this.globalConfig.endpoints.internal_api_gateway_endpoint}driver-bff/v1/sessions/${sessionId}`;
+    const url = `${this.globalConfig.endpoints.internal_api_gateway_endpoint}/driver-bff/v1/sessions/${sessionId}`;
     const response = await this._request('POST', url, { charging_status: { session_id: sessionId, mfhs: [] } });
     this._raiseForStatus(response, 'Failed to get charging session.');
-    this.log.debug(`charging session raw: ${JSON.stringify(response.data)}`);
     const d = response.data?.charging_status;
     if (!d || d.error_message || d.error) return null;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

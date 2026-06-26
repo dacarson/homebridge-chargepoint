@@ -18,7 +18,8 @@ export interface HomeChargerConfiguration {
 }
 
 export interface UserChargingStatus {
-  session_id: number;
+  session_id: number | null;
+  state: string;      // "in_use", "waiting", "fully_charged", or ""
   stations: Array<{ id: number }>;
 }
 
