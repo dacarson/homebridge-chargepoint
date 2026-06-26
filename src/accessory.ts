@@ -11,7 +11,7 @@ import type {
   HomeChargerTechnicalInfo,
   ChargingSession,
 } from './chargepoint/types';
-import { buildEveCharacteristics, safeW, safeA } from './eveCharacteristics';
+import { buildEveCharacteristics, safeW } from './eveCharacteristics';
 import { loadLifetimeKwh, saveLifetimeKwh } from './tokenStore';
 import fakegato = require('fakegato-history');
 
@@ -143,7 +143,7 @@ export class ChargePointAccessory {
       }
     }
     const powerW = safeW(powerKw);
-    const currentA = safeA(powerKw);
+    const currentA = isCharging ? (this.status?.amperage_limit ?? 0) : 0;
 
     this.log.debug(
       `[${this.chargerId}] isCharging=${isCharging} powerSource=${powerSource} powerKw=${powerKw} powerW=${powerW} currentA=${currentA} lifetimeKwh=${this.lifetimeKwh}`,
