@@ -56,8 +56,3 @@ export function safeW(powerKw: number): number {
   const w = powerKw * 1000;
   return Number.isFinite(w) ? w : 0;
 }
-
-export function safeA(powerKw: number): number {
-  const a = (powerKw * 1000) / 240.0;
-  return Number.isFinite(a) ? a : 0;
-}

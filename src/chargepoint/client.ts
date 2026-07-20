@@ -266,10 +266,4 @@ export class ChargePointClient {
       })),
     };
   }
-
-  async setAmperageLimit(chargerId: number, amps: number): Promise<void> {
-    const url = `${this.globalConfig.endpoints.hcpo_hcm_endpoint}api/v1/configuration/chargers/${chargerId}/charge-amperage-limit`;
-    const response = await this._request('PUT', url, { chargeAmperageLimit: amps });
-    this._raiseForStatus(response, 'Failed to set amperage limit.');
-  }
 }
