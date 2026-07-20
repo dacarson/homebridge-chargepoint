@@ -23,9 +23,11 @@ Each configured charger appears as a single **Outlet** accessory (the service ty
 | Current Consumption | Instantaneous draw in watts |
 | Total Consumption | Lifetime energy in kWh (persistent across restarts) |
 | Voltage | Fixed 240 V (L2) |
-| Electric Current | Instantaneous current in amps (derived from power ÷ 240 V) |
+| Electric Current | Configured charging amperage limit in amps (0 when not charging) |
 
 The Eve-specific characteristics use Eve's exact UUIDs so the Eve app renders energy graphs and history automatically.
+
+> **Note on voltage:** The ChargePoint API does not report input voltage anywhere (status, session, or config). The Home Flex accepts **208 or 240 V AC single-phase** input, but this is fixed by the electrical service at install (240 V for typical single-family homes, 208 V for some multi-family/commercial buildings) — it is not a configurable or queryable setting. Only the **amperage** limit is adjustable. The plugin therefore reports a fixed **240 V**.
 
 ## Requirements
 
@@ -170,6 +172,10 @@ config.schema.json
 package.json
 tsconfig.json
 ```
+
+## Acknowledgements
+
+The ChargePoint API client in this plugin is a TypeScript port of [**python-chargepoint**](https://github.com/mbillow/python-chargepoint) by [Marc Billow](https://github.com/mbillow). That project is the authoritative reference for ChargePoint's API and made this plugin possible. Many thanks to Marc and its contributors.
 
 ## License
 
