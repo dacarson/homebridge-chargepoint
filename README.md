@@ -2,6 +2,10 @@
 
 A native [Homebridge](https://homebridge.io) dynamic platform plugin that exposes a **ChargePoint Home Flex** EV charger as an **Eve Energy** accessory in HomeKit.
 
+## Disclaimer
+
+This project is not affiliated with, endorsed by, or supported by ChargePoint in any way. It relies on an unofficial API that may change or break at any time. Use at your own risk. ChargePoint is a registered trademark of ChargePoint, Inc.
+
 ## Features
 
 - Real-time power consumption, current, and voltage in the Eve app's energy graphs
