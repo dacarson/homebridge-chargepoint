@@ -29,24 +29,6 @@
         "type": "integer",
         "default": 30,
         "minimum": 10
-      },
-      "devices": {
-        "title": "Chargers",
-        "type": "array",
-        "items": {
-          "type": "object",
-          "required": ["chargerId"],
-          "properties": {
-            "chargerId": {
-              "title": "Charger ID",
-              "type": "integer"
-            },
-            "name": {
-              "title": "Display Name",
-              "type": "string"
-            }
-          }
-        }
       }
     }
   }

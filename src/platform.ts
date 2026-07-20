@@ -24,11 +24,11 @@ interface ChargePointPlatformConfig extends PlatformConfig {
   password: string;
   sessionToken?: string;
   pollingIntervalSeconds?: number;
-  devices?: Array<{ chargerId: number; name?: string }>;
 }
 
 export class ChargePointPlatform implements DynamicPlatformPlugin {
-  private readonly accessories = new Map<number, ChargePointAccessory>();
+  // ChargePoint allows only one home charger per account.
+  private accessory?: ChargePointAccessory;
   private readonly cachedPlatformAccessories: PlatformAccessory[] = [];
   private client!: ChargePointClient;
 
@@ -62,7 +62,7 @@ export class ChargePointPlatform implements DynamicPlatformPlugin {
       this.client = new ChargePointClient(this.config.username, this.log);
 
       await this._authFlow();
-      await this._discoverDevices();
+      await this._discoverCharger();
       this._startPolling();
     } catch (err) {
       this.log.error('Plugin failed to initialize:', err);
@@ -115,40 +115,34 @@ export class ChargePointPlatform implements DynamicPlatformPlugin {
     }
   }
 
-  private async _discoverDevices(): Promise<void> {
-    let chargerIds: number[];
-
-    if (this.config.devices && this.config.devices.length > 0) {
-      chargerIds = this.config.devices.map(d => d.chargerId);
-      this.log.info(`Using ${chargerIds.length} configured charger(s).`);
-    } else {
-      chargerIds = await this.client.getHomeChargers();
-      this.log.info(`Discovered ${chargerIds.length} home charger(s): ${chargerIds.join(', ')}`);
+  private async _discoverCharger(): Promise<void> {
+    const chargerId = await this.client.getHomeCharger();
+    if (chargerId === null) {
+      this.log.error('No home charger found on this ChargePoint account.');
+      return;
     }
+    this.log.info(`Discovered home charger: ${chargerId}`);
 
-    // Remove stale cached accessories
+    // Remove any stale cached accessories (e.g. the account's charger changed)
     const staleAccessories = this.cachedPlatformAccessories.filter(a => {
       const ctx = a.context as AccessoryContext;
-      return !chargerIds.includes(ctx.chargerId);
+      return ctx.chargerId !== chargerId;
     });
     if (staleAccessories.length > 0) {
       this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, staleAccessories);
     }
 
-    for (const chargerId of chargerIds) {
-      await this._registerOrRestoreAccessory(chargerId);
-    }
+    await this._registerOrRestoreAccessory(chargerId);
   }
 
   private async _registerOrRestoreAccessory(chargerId: number): Promise<void> {
     const uuid = this.api.hap.uuid.generate(`chargepoint-${chargerId}`);
-    const configuredDevice = this.config.devices?.find(d => d.chargerId === chargerId);
 
     let platformAccessory = this.cachedPlatformAccessories.find(a => a.UUID === uuid);
     let isNew = false;
 
     if (!platformAccessory) {
-      const displayName = configuredDevice?.name ?? `ChargePoint ${chargerId}`;
+      const displayName = `ChargePoint ${chargerId}`;
       platformAccessory = new this.api.platformAccessory(displayName, uuid);
       (platformAccessory.context as AccessoryContext) = { chargerId, displayName };
       isNew = true;
@@ -167,27 +161,24 @@ export class ChargePointPlatform implements DynamicPlatformPlugin {
     // Populate static info (model, serial, firmware)
     try {
       const techInfo = await this.client.getHomeChargerTechnicalInfo(chargerId);
-      // Try to get station nickname if no configured name
-      let displayName = configuredDevice?.name;
-      if (!displayName) {
-        try {
-          const cfg = await this.client.getHomeChargerConfig(chargerId);
-          displayName = cfg.station_nickname || `ChargePoint ${chargerId}`;
-        } catch {
-          displayName = `ChargePoint ${chargerId}`;
-        }
-        platformAccessory.displayName = displayName;
-        const nameChar = platformAccessory
-          .getService(this.api.hap.Service.AccessoryInformation)
-          ?.getCharacteristic(this.api.hap.Characteristic.Name);
-        if (nameChar) nameChar.updateValue(displayName);
+      let displayName: string;
+      try {
+        const cfg = await this.client.getHomeChargerConfig(chargerId);
+        displayName = cfg.station_nickname || `ChargePoint ${chargerId}`;
+      } catch {
+        displayName = `ChargePoint ${chargerId}`;
       }
+      platformAccessory.displayName = displayName;
+      const nameChar = platformAccessory
+        .getService(this.api.hap.Service.AccessoryInformation)
+        ?.getCharacteristic(this.api.hap.Characteristic.Name);
+      if (nameChar) nameChar.updateValue(displayName);
       await accessory.initTechInfo(techInfo);
     } catch (err) {
       this.log.warn(`[${chargerId}] Could not fetch tech info: ${err}`);
     }
 
-    this.accessories.set(chargerId, accessory);
+    this.accessory = accessory;
 
     if (isNew) {
       this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [platformAccessory]);
@@ -203,24 +194,30 @@ export class ChargePointPlatform implements DynamicPlatformPlugin {
     void this._pollCycle();
   }
 
-  private _scheduleNextPoll(anyCharging = false): void {
-    const interval = this._nextIntervalMs(anyCharging);
+  private _scheduleNextPoll(charging = false): void {
+    const interval = this._nextIntervalMs(charging);
     setTimeout(() => this._pollCycle(), interval);
   }
 
-  private _nextIntervalMs(anyCharging = false): number {
+  private _nextIntervalMs(charging = false): number {
     const now = Date.now();
     if (now < this.captchaBackoffUntil) return Math.max(1000, this.captchaBackoffUntil - now);
     if (now < this.authBackoffUntil) return Math.max(1000, this.authBackoffUntil - now);
     const base = (this.config.pollingIntervalSeconds ?? 30) * 1000;
     // Use 15 s while actively charging so power readings stay fresh
-    return anyCharging ? Math.min(15_000, base) : base;
+    return charging ? Math.min(15_000, base) : base;
   }
 
   private async _pollCycle(): Promise<void> {
-    let anyCharging = false;
+    const accessory = this.accessory;
+    if (!accessory) {
+      this._scheduleNextPoll();
+      return;
+    }
 
-    // ── Phase 1: account-level charging status (once per cycle) ──────────────
+    let charging = false;
+
+    // ── Phase 1: account-level charging status ────────────────────────────────
     let accountStatus: UserChargingStatus | null = null;
     let activeSession: ChargingSession | null = null;
 
@@ -244,31 +241,28 @@ export class ChargePointPlatform implements DynamicPlatformPlugin {
       this.log.warn(`Poll: could not fetch charging status: ${err}`);
     }
 
-    // ── Phase 2: per-accessory refresh ────────────────────────────────────────
-    for (const [chargerId, accessory] of this.accessories) {
-      try {
-        const stationMatch = accountStatus?.stations.find(s => s.id === chargerId);
-        const session = stationMatch ? activeSession : null;
-        await accessory.refresh(session);
-        if (session) anyCharging = true;
-      } catch (err) {
-        if (err instanceof InvalidSession) {
-          await this._handleMidPollInvalidSession();
-          break;
-        } else if (err instanceof DatadomeCaptcha) {
-          await this._handleDatadomeCaptcha(err as DatadomeCaptcha);
-          break;
-        } else if (err instanceof CommunicationError) {
-          this.log.warn(`[${chargerId}] Poll communication error: ${err.message}`);
-          accessory.markNoResponse();
-        } else {
-          this.log.warn(`[${chargerId}] Refresh error: ${err}`);
-          accessory.markNoResponse();
-        }
+    // ── Phase 2: charger refresh ──────────────────────────────────────────────
+    try {
+      // Only attribute the active session to this charger if it belongs to it.
+      const stationMatch = accountStatus?.stations.find(s => s.id === accessory.chargerId);
+      const session = stationMatch ? activeSession : null;
+      await accessory.refresh(session);
+      if (session) charging = true;
+    } catch (err) {
+      if (err instanceof InvalidSession) {
+        await this._handleMidPollInvalidSession();
+      } else if (err instanceof DatadomeCaptcha) {
+        await this._handleDatadomeCaptcha(err as DatadomeCaptcha);
+      } else if (err instanceof CommunicationError) {
+        this.log.warn(`[${accessory.chargerId}] Poll communication error: ${err.message}`);
+        accessory.markNoResponse();
+      } else {
+        this.log.warn(`[${accessory.chargerId}] Refresh error: ${err}`);
+        accessory.markNoResponse();
       }
     }
 
-    this._scheduleNextPoll(anyCharging);
+    this._scheduleNextPoll(charging);
   }
 
   private async _handleMidPollInvalidSession(): Promise<void> {
@@ -286,7 +280,7 @@ export class ChargePointPlatform implements DynamicPlatformPlugin {
         this.log.error(`Re-authentication failed: ${err}`);
         // 15-min backoff after failed re-auth
         this.authBackoffUntil = Date.now() + 15 * 60 * 1000;
-        this._markAllNoResponse();
+        this.accessory?.markNoResponse();
       }
     }
   }
@@ -295,12 +289,6 @@ export class ChargePointPlatform implements DynamicPlatformPlugin {
     this.log.error(`Blocked by Datadome. Solve captcha at: ${err.captchaUrl}`);
     this.log.error('Add the coulomb_sess cookie value as "sessionToken" in the plugin config to recover.');
     this.captchaBackoffUntil = Date.now() + 5 * 60 * 1000;
-    this._markAllNoResponse();
-  }
-
-  private _markAllNoResponse(): void {
-    for (const acc of this.accessories.values()) {
-      acc.markNoResponse();
-    }
+    this.accessory?.markNoResponse();
   }
 }

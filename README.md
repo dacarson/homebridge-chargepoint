@@ -2,6 +2,8 @@
 
 A native [Homebridge](https://homebridge.io) dynamic platform plugin that exposes a **ChargePoint Home Flex** EV charger as an **Eve Energy** accessory in HomeKit.
 
+ChargePoint allows only one home charger per account, so the plugin exposes exactly one charger — the one registered to your account.
+
 ## Disclaimer
 
 This project is not affiliated with, endorsed by, or supported by ChargePoint in any way. It relies on an unofficial API that may change or break at any time. Use at your own risk. ChargePoint is a registered trademark of ChargePoint, Inc.
@@ -18,7 +20,7 @@ This project is not affiliated with, endorsed by, or supported by ChargePoint in
 
 ## HomeKit Accessory
 
-Each configured charger appears as a single **Outlet** accessory (the service type Eve Energy uses):
+The charger appears as a single **Outlet** accessory (the service type Eve Energy uses):
 
 | Characteristic | Description |
 |---|---|
@@ -35,8 +37,8 @@ The Eve-specific characteristics use Eve's exact UUIDs so the Eve app renders en
 
 ## Requirements
 
-- **Node.js** ≥ 18
-- **Homebridge** ≥ 1.8.0
+- **Node.js** ≥ 24.16.0
+- **Homebridge** ≥ 2.1.0
 - A ChargePoint Home Flex (or compatible Home charger)
 - Homebridge Config UI X (strongly recommended for the custom Setup tab)
 
@@ -79,24 +81,8 @@ The Setup tab handles first-run authentication and CAPTCHA recovery without you 
 | `username` | string | **required** | ChargePoint account email |
 | `password` | string | **required** | ChargePoint account password |
 | `pollingIntervalSeconds` | integer | `30` | How often to poll for status (minimum 10 s) |
-| `devices` | array | auto-discover | Pin specific charger IDs (see below) |
 
-#### Pinning specific chargers
-
-If you have more than one home charger or only want to expose certain ones:
-
-```json
-{
-  "platform": "ChargePoint",
-  "username": "you@example.com",
-  "password": "your-password",
-  "devices": [
-    { "chargerId": 1234567, "name": "Garage" }
-  ]
-}
-```
-
-If `devices` is omitted the plugin auto-discovers all home chargers on your account.
+The plugin automatically discovers the single home charger registered to your account — no charger ID configuration is needed.
 
 ## Authentication and Token Persistence
 

@@ -17,12 +17,18 @@
     "homekit"
   ],
   "license": "MIT",
+  "files": [
+    "dist",
+    "config.schema.json",
+    "README.md",
+    "LICENSE"
+  ],
   "engines": {
-    "node": ">=18.0.0",
-    "homebridge": ">=1.8.0"
+    "node": ">=24.16.0",
+    "homebridge": ">=2.1.0"
   },
   "peerDependencies": {
-    "homebridge": ">=1.8.0",
+    "homebridge": ">=2.1.0",
     "hap-nodejs": ">=0.12.0"
   },
   "dependencies": {

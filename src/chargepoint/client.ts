@@ -182,12 +182,15 @@ export class ChargePointClient {
 
   // ── Home Charger ──────────────────────────────────────────────────────────
 
-  async getHomeChargers(): Promise<number[]> {
+  // ChargePoint permits only one home charger per account, so this returns the
+  // single charger id (or null if none is registered).
+  async getHomeCharger(): Promise<number | null> {
     const url = `${this.globalConfig.endpoints.hcpo_hcm_endpoint}api/v1/configuration/users/${this.userId}/chargers`;
     const response = await this._request('GET', url);
-    this._raiseForStatus(response, 'Failed to retrieve Home Flex chargers.');
+    this._raiseForStatus(response, 'Failed to retrieve Home Flex charger.');
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return ((response.data?.data ?? []) as any[]).map(item => parseInt(item.id, 10));
+    const chargers = (response.data?.data ?? []) as any[];
+    return chargers.length > 0 ? parseInt(chargers[0].id, 10) : null;
   }
 
   async getHomeChargerStatus(chargerId: number): Promise<HomeChargerStatus> {
