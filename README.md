@@ -1,7 +1,7 @@
 
 [![License: MIT](https://img.shields.io/github/license/dacarson/homebridge-chargepoint)](LICENSE)
 [![Version](https://img.shields.io/github/v/release/dacarson/homebridge-chargepoint)](https://github.com/dacarson/homebridge-chargepoint/releases)
-[![Downloads](https://img.shields.io/github/downloads/dacarson/homebridge-chargepoint/total)](https://github.com/dacarson/homebridge-chargepoint/releases)
+[![npm downloads](https://img.shields.io/npm/dt/homebridge-chargepoint)](https://www.npmjs.com/package/homebridge-chargepoint)
 
 # homebridge-chargepoint
 
