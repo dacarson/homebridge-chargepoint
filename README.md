@@ -1,3 +1,8 @@
+
+[![License: MIT](https://img.shields.io/github/license/dacarson/homebridge-chargepoint)](LICENSE)
+[![Version](https://img.shields.io/github/v/release/dacarson/homebridge-chargepoint)](https://github.com/dacarson/homebridge-chargepoint/releases)
+[![Downloads](https://img.shields.io/github/downloads/dacarson/homebridge-chargepoint/total)](https://github.com/dacarson/homebridge-chargepoint/releases)
+
 # homebridge-chargepoint
 
 A native [Homebridge](https://homebridge.io) dynamic platform plugin that exposes a **ChargePoint Home Flex** EV charger as an **Eve Energy** accessory in HomeKit.
