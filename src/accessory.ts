@@ -13,6 +13,7 @@ import type {
 } from './chargepoint/types';
 import { buildEveCharacteristics, safeW } from './eveCharacteristics';
 import { loadLifetimeKwh, saveLifetimeKwh } from './tokenStore';
+import { MatterEnergyBridge, EnergyReadings } from './matterEnergy';
 import fakegato = require('fakegato-history');
 
 export interface AccessoryContext {
@@ -48,11 +49,17 @@ export class ChargePointAccessory {
   private _lastStoredHistoryPower = 0;
   private static readonly IDLE_HISTORY_INTERVAL_MS = 10 * 60 * 1000;
 
+  // Optional: publishes the charger over Matter for the Apple Home Energy view.
+  // Null when the "matter" config option is off; a no-op bridge when it's on
+  // but the Homebridge build doesn't support it. See matterEnergy.ts.
+  private matter: MatterEnergyBridge | null = null;
+
   constructor(
     private readonly api: API,
     private readonly log: Logger,
     private readonly platformAccessory: PlatformAccessory,
     private readonly client: ChargePointClient,
+    matterEnabled = false,
   ) {
     const context = platformAccessory.context as AccessoryContext;
     this.chargerId = context.chargerId;
@@ -82,6 +89,30 @@ export class ChargePointAccessory {
       storage: 'fs',
       disableTimer: true,
     });
+
+    if (matterEnabled) {
+      const bridge = new MatterEnergyBridge(api, log);
+      if (bridge.isSupported()) {
+        this.matter = bridge;
+        // Registration is async; failures are logged inside register().
+        bridge.register(this.chargerId, context.displayName, this._readings(0, 0, false)).catch(() => {});
+      } else {
+        this.log.info('[matter] Config option "matter" is enabled, but the Matter API is unavailable. It needs Homebridge 2.3.0 or later with Matter enabled on this plugin\'s child bridge. Continuing with HomeKit/Eve only.');
+      }
+    }
+  }
+
+  // Normalized electrical readings, in human units. Single source of truth
+  // consumed by both the Eve characteristic update path and the Matter
+  // export, so the two stay in sync.
+  private _readings(powerW: number, currentA: number, isCharging: boolean): EnergyReadings {
+    return {
+      voltageV: 240.0,
+      currentA,
+      powerW,
+      energyWh: this.lifetimeKwh * 1000,
+      charging: isCharging,
+    };
   }
 
   // Finds an existing characteristic by UUID in the raw array (bypassing the broken
@@ -162,6 +193,9 @@ export class ChargePointAccessory {
     this.charTotalConsumption.updateValue(this.lifetimeKwh);
     this.charVoltage.updateValue(240.0);
     this.charElectricCurrent.updateValue(currentA);
+
+    // Push the same readings to the Matter export (no-op unless registered)
+    if (this.matter) this.matter.update(this._readings(powerW, currentA, isCharging)).catch(() => {});
   }
 
   private _updateHistory(session: ChargingSession | null): void {

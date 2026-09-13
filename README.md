@@ -17,7 +17,7 @@ This project is not affiliated with, endorsed by, or supported by ChargePoint in
 
 - Real-time power consumption, current, and voltage in the Eve app's energy graphs
 - Lifetime kWh accumulator (monotonic — Eve's history graphs work correctly)
-- Start and stop charging from HomeKit or automations
+- Optional: live watts in the Apple Home **Energy** view via Matter (see [Apple Home Energy & Matter](#apple-home-energy--matter))
 - Plug detection via `OutletInUse`
 - "No Response" when the charger is offline — no stale data
 - Automatic session token persistence so Homebridge restarts don't trigger Datadome bot-protection
@@ -43,7 +43,7 @@ The Eve-specific characteristics use Eve's exact UUIDs so the Eve app renders en
 ## Requirements
 
 - **Node.js** ≥ 24.16.0
-- **Homebridge** ≥ 2.1.0
+- **Homebridge** ≥ 2.1.0 (≥ 2.3.0 if you want the optional Apple Home Energy view via Matter)
 - A ChargePoint Home Flex (or compatible Home charger)
 - Homebridge Config UI X (strongly recommended for the custom Setup tab)
 
@@ -86,6 +86,7 @@ The Setup tab handles first-run authentication and CAPTCHA recovery without you 
 | `username` | string | **required** | ChargePoint account email |
 | `password` | string | **required** | ChargePoint account password |
 | `pollingIntervalSeconds` | integer | `30` | How often to poll for status (minimum 10 s) |
+| `matter` | boolean | `false` | Also publish the charger over Matter with electrical measurements, so it shows watts on its tile in the Apple Home Energy view (see [Apple Home Energy & Matter](#apple-home-energy--matter)) |
 
 The plugin automatically discovers the single home charger registered to your account — no charger ID configuration is needed.
 
@@ -119,17 +120,43 @@ Once the token is saved, restart Homebridge and the plugin resumes normally.
 | Datadome CAPTCHA encountered | 5-minute backoff |
 | Session expired and re-auth failed | 15-minute backoff |
 
-## Charging Control
-
-Writing `On = true` in HomeKit fires a start-session command. Writing `On = false` fires a stop command. Both are **fire-and-forget**: HomeKit receives an acknowledgement immediately and the next poll reflects the real state, so the toggle never shows as failed even when the charger takes a few seconds to respond.
-
-> **Note:** Stopping requires an active session to be known. If the plugin has just started and hasn't polled yet, a stop request is logged and ignored; the next poll will reflect the true state.
+> **Note:** This plugin is **read-only** — it reports charging status and readings but does not start or stop charging. Toggling `On` in the Home app has no effect; the next poll restores the true state.
 
 ## Energy History (Eve)
 
 `TotalConsumption` is a **lifetime cumulative kWh meter**, not a per-session value. This matches what Eve expects — Eve calculates period usage by differencing readings, so the value must grow monotonically and never reset to zero.
 
 The plugin persists a base accumulator in Homebridge's storage directory. On each poll while a session is active it adds the session's live energy on top. When a session ends, the final session energy is committed to the base. The history begins from the plugin's first run.
+
+## Apple Home Energy & Matter
+
+Apple Home's native **Energy** view is driven by **Matter** electrical-measurement clusters, **not** by classic HomeKit/HAP characteristics. HAP has no power or energy characteristic at all, so the Eve characteristics above (which only Eve-class apps read) can never populate it — no matter how the HomeKit accessory is shaped.
+
+Homebridge 2.2.0 added the Matter electrical measurement clusters to its plugin API, and 2.3.0 fixed the composition and bridge-online behavior needed to use them. With `"matter": true`, this plugin publishes the charger a second time over Matter as an **outlet carrying live electrical measurements**:
+
+| Reading | Matter cluster attribute | Unit sent |
+| --- | --- | --- |
+| Charging state | `onOff.onOff` | — |
+| Fixed 240 V | `electricalPowerMeasurement.voltage` | mV |
+| Amperage limit | `electricalPowerMeasurement.activeCurrent` | mA |
+| Power (V × A) | `electricalPowerMeasurement.activePower` | mW |
+| Lifetime kWh | `electricalEnergyMeasurement.cumulativeEnergyImported.energy` | mWh |
+
+### Requirements
+
+- **Homebridge 2.3.0 or later**
+- **Matter enabled on this plugin's child bridge** — in the Homebridge UI: plugin settings → **Bridge Settings** → enable Matter, then pair the Matter bridge in the Home app
+- An Apple Home setup on **iOS/tvOS 26 or later** for the Energy view itself
+
+If the Matter API isn't available (older Homebridge, or Matter not enabled), the plugin detects that, logs a single informational line, and continues to work exactly as before over HomeKit/Eve.
+
+### What to expect
+
+Live watts appear on the accessory's tile, and its consumption is counted toward your home's energy total. Apple currently reserves the **per-device listing** in the Energy breakdown for certified, natively-paired Matter devices — bridged accessories like this one contribute to the total and show on their own tile, but may not get their own row in that list.
+
+### Read-only
+
+Like the rest of this plugin, the Matter outlet is read-only — it cannot start or stop charging. Toggling it in the Home app logs a warning and the next poll restores the true state.
 
 ## Development
 
@@ -152,6 +179,7 @@ src/
   accessory.ts              ChargePointAccessory — Eve Energy outlet wrapper
   tokenStore.ts             node-persist wrapper (session token, flags, lifetime kWh)
   eveCharacteristics.ts     custom HAP characteristics matching Eve Energy UUIDs
+  matterEnergy.ts           optional Matter export for the Apple Home Energy view
   chargepoint/
     client.ts               ChargePoint HTTP client (axios + tough-cookie)
     types.ts                TypeScript types for API responses
