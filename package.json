@@ -1,6 +1,6 @@
 {
   "name": "homebridge-chargepoint",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Homebridge plugin for ChargePoint Home Flex EV charger — exposes as Eve Energy accessory",
   "main": "dist/src/index.js",
   "scripts": {
