@@ -14,7 +14,9 @@
     "chargepoint",
     "ev",
     "charging",
-    "homekit"
+    "homekit",
+    "supports-hap",
+    "supports-matter"
   ],
   "license": "MIT",
   "files": [
