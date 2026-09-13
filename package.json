@@ -6,7 +6,6 @@
   "scripts": {
     "build": "tsc",
     "watch": "tsc --watch",
-    "prepare": "npm run build",
     "prepublishOnly": "npm run build",
     "lint": "eslint src/**/*.ts"
   },
