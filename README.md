@@ -144,9 +144,9 @@ Homebridge 2.2.0 added the Matter electrical measurement clusters to its plugin 
 
 ### Requirements
 
-- **Homebridge 2.3.0 or later**
+- **Homebridge 2.4.0 or later**
 - **Matter enabled on this plugin's child bridge** — in the Homebridge UI: plugin settings → **Bridge Settings** → enable Matter, then pair the Matter bridge in the Home app
-- An Apple Home setup on **iOS/tvOS 26 or later** for the Energy view itself
+- An Apple Home setup on **iOS/tvOS 27 or later** for the Energy view itself
 
 If the Matter API isn't available (older Homebridge, or Matter not enabled), the plugin detects that, logs a single informational line, and continues to work exactly as before over HomeKit/Eve.
 
