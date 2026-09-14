@@ -129,6 +129,13 @@ Once the token is saved, restart Homebridge and the plugin resumes normally.
 The plugin persists a base accumulator in Homebridge's storage directory. On each poll while a session is active it adds the session's live energy on top. When a session ends, the final session energy is committed to the base. The history begins from the plugin's first run.
 
 ## Apple Home Energy & Matter
+<table>
+  <td>
+<img width="600" alt="MatterEnergy" src="https://github.com/user-attachments/assets/fcff5f12-54cb-4431-a944-8ac04c6e044f" />
+        <br><sub>Apple Energy view with other Energy accessories</sub>
+    </td>
+</table>
+
 
 Apple Home's native **Energy** view is driven by **Matter** electrical-measurement clusters, **not** by classic HomeKit/HAP characteristics. HAP has no power or energy characteristic at all, so the Eve characteristics above (which only Eve-class apps read) can never populate it — no matter how the HomeKit accessory is shaped.
 
