@@ -86,7 +86,7 @@ The Setup tab handles first-run authentication and CAPTCHA recovery without you 
 | `username` | string | **required** | ChargePoint account email |
 | `password` | string | **required** | ChargePoint account password |
 | `pollingIntervalSeconds` | integer | `30` | How often to poll for status (minimum 10 s) |
-| `matter` | boolean | `false` | Also publish the charger over Matter with electrical measurements, so it shows watts on its tile in the Apple Home Energy view (see [Apple Home Energy & Matter](#apple-home-energy--matter)) |
+| `matter` | boolean | `false` | Also publish the charger over Matter as an electrical sensor, so its live watts and energy feed the Apple Home Energy view (see [Apple Home Energy & Matter](#apple-home-energy--matter)) |
 
 The plugin automatically discovers the single home charger registered to your account — no charger ID configuration is needed.
 
@@ -132,15 +132,15 @@ The plugin persists a base accumulator in Homebridge's storage directory. On eac
 
 Apple Home's native **Energy** view is driven by **Matter** electrical-measurement clusters, **not** by classic HomeKit/HAP characteristics. HAP has no power or energy characteristic at all, so the Eve characteristics above (which only Eve-class apps read) can never populate it — no matter how the HomeKit accessory is shaped.
 
-Homebridge 2.2.0 added the Matter electrical measurement clusters to its plugin API, and 2.3.0 fixed the composition and bridge-online behavior needed to use them. With `"matter": true`, this plugin publishes the charger a second time over Matter as an **outlet carrying live electrical measurements**:
+Homebridge 2.2.0 added the Matter electrical measurement clusters to its plugin API, and 2.3.0 fixed the composition and bridge-online behavior needed to use them. With `"matter": true`, this plugin publishes the charger a second time over Matter as a **standalone electrical sensor** (`ElectricalSensor` — Homebridge's device type for a power/energy meter, distinct from a controllable outlet):
 
 | Reading | Matter cluster attribute | Unit sent |
 | --- | --- | --- |
-| Charging state | `onOff.onOff` | — |
 | Fixed 240 V | `electricalPowerMeasurement.voltage` | mV |
 | Amperage limit | `electricalPowerMeasurement.activeCurrent` | mA |
 | Power (V × A) | `electricalPowerMeasurement.activePower` | mW |
 | Lifetime kWh | `electricalEnergyMeasurement.cumulativeEnergyImported.energy` | mWh |
+| Energy since last poll | `electricalEnergyMeasurement.periodicEnergyImported.energy` | mWh |
 
 ### Requirements
 
@@ -152,11 +152,7 @@ If the Matter API isn't available (older Homebridge, or Matter not enabled), the
 
 ### What to expect
 
-Live watts appear on the accessory's tile, and its consumption is counted toward your home's energy total. Apple currently reserves the **per-device listing** in the Energy breakdown for certified, natively-paired Matter devices — bridged accessories like this one contribute to the total and show on their own tile, but may not get their own row in that list.
-
-### Read-only
-
-Like the rest of this plugin, the Matter outlet is read-only — it cannot start or stop charging. Toggling it in the Home app logs a warning and the next poll restores the true state.
+Because `ElectricalSensor` has no on/off cluster or any other controllable surface, it doesn't show up as a second accessory tile alongside the real HAP outlet — it only feeds live watts and energy into the Energy view. Apple currently reserves the **per-device listing** in the Energy breakdown for certified, natively-paired Matter devices — bridged accessories like this one contribute to the total but may not get their own row in that list.
 
 ## Development
 

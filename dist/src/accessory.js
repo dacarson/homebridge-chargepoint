@@ -69,7 +69,7 @@ class ChargePointAccessory {
             if (bridge.isSupported()) {
                 this.matter = bridge;
                 // Registration is async; failures are logged inside register().
-                bridge.register(this.chargerId, context.displayName, this._readings(0, 0, false)).catch(() => { });
+                bridge.register(this.chargerId, context.displayName, this._readings(0, 0)).catch(() => { });
             }
             else {
                 this.log.info('[matter] Config option "matter" is enabled, but the Matter API is unavailable. It needs Homebridge 2.3.0 or later with Matter enabled on this plugin\'s child bridge. Continuing with HomeKit/Eve only.');
@@ -79,13 +79,12 @@ class ChargePointAccessory {
     // Normalized electrical readings, in human units. Single source of truth
     // consumed by both the Eve characteristic update path and the Matter
     // export, so the two stay in sync.
-    _readings(powerW, currentA, isCharging) {
+    _readings(powerW, currentA) {
         return {
             voltageV: 240.0,
             currentA,
             powerW,
             energyWh: this.lifetimeKwh * 1000,
-            charging: isCharging,
         };
     }
     // Finds an existing characteristic by UUID in the raw array (bypassing the broken
@@ -157,7 +156,7 @@ class ChargePointAccessory {
         this.charElectricCurrent.updateValue(currentA);
         // Push the same readings to the Matter export (no-op unless registered)
         if (this.matter)
-            this.matter.update(this._readings(powerW, currentA, isCharging)).catch(() => { });
+            this.matter.update(this._readings(powerW, currentA)).catch(() => { });
     }
     _updateHistory(session) {
         // Backfill historical data points when a new session is first seen

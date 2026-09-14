@@ -2,9 +2,10 @@
 /**
  * matterEnergy.ts
  *
- * Publishes the ChargePoint charger to Matter controllers as an outlet that
- * reports live electrical measurements, so it appears in the Apple Home
- * Energy view (iOS/tvOS 26+) with live watts on its tile.
+ * Publishes the ChargePoint charger to Matter controllers as a standalone
+ * electrical sensor, so it appears in the Apple Home Energy view (iOS/tvOS
+ * 26+) with live watts — without also showing up as a second, controllable
+ * accessory tile alongside the real HAP outlet.
  *
  * Background
  * ----------
@@ -29,11 +30,13 @@
  * Homebridge derives the mandatory cluster attributes (powerMode, accuracy,
  * numberOfMeasurementTypes) and the feature-gated ElectricalEnergyMeasurement
  * features from the declared state — declaring `cumulativeEnergyImported`
- * selects the ImportedEnergy + CumulativeEnergy features. A plain
- * `OnOffOutlet` device type that declares electricalPowerMeasurement /
- * electricalEnergyMeasurement state gets those clusters automatically; no
- * separate EnergyEvse device type is needed (and Homebridge does not
- * currently expose one — see homebridge/homebridge#3942).
+ * selects the ImportedEnergy + CumulativeEnergy features. `ElectricalSensor`
+ * (`deviceTypes.ElectricalSensor`) is Homebridge's device type specifically
+ * for a standalone power/energy meter (its own comment: "e.g. a solar or
+ * whole-home meter") — unlike `OnOffOutlet`, it carries no onOff cluster, so
+ * it doesn't present as a second controllable accessory the way the outlet
+ * shape did. No separate EnergyEvse device type is needed (and Homebridge
+ * does not currently expose one — see homebridge/homebridge#3942).
  *
  * Also declares `periodicEnergyImported` — the energy delta since the
  * previous poll, with a start/end timestamp — alongside the cumulative
@@ -80,9 +83,9 @@ class MatterEnergyBridge {
         this.api = api;
     }
     /**
-     * Whether this Homebridge build exposes everything needed to publish an
-     * outlet with electrical measurements. Logs at debug level so unsupported
-     * builds stay quiet.
+     * Whether this Homebridge build exposes everything needed to publish a
+     * standalone electrical sensor. Logs at debug level so unsupported builds
+     * stay quiet.
      */
     isSupported() {
         const matter = this.api.matter;
@@ -90,8 +93,8 @@ class MatterEnergyBridge {
             this.log.debug('[matter] api.matter unavailable — Matter energy export disabled. Requires Homebridge 2.3.0+ with Matter enabled on this plugin\'s child bridge.');
             return false;
         }
-        if (!matter.deviceTypes?.OnOffOutlet) {
-            this.log.debug('[matter] api.matter.deviceTypes.OnOffOutlet unavailable — Matter energy export disabled.');
+        if (!matter.deviceTypes?.ElectricalSensor) {
+            this.log.debug('[matter] api.matter.deviceTypes.ElectricalSensor unavailable — Matter energy export disabled.');
             return false;
         }
         if (typeof matter.registerPlatformAccessories !== 'function' || typeof matter.updateAccessoryState !== 'function') {
@@ -102,7 +105,6 @@ class MatterEnergyBridge {
     }
     buildClusters(r) {
         return {
-            onOff: { onOff: r.charging },
             electricalPowerMeasurement: {
                 voltage: milli(r.voltageV),
                 activeCurrent: milli(r.currentA),
@@ -141,7 +143,7 @@ class MatterEnergyBridge {
         return fragment;
     }
     /**
-     * Register the charger as a Matter outlet with electrical measurements.
+     * Register the charger as a standalone Matter electrical sensor.
      *
      * @param chargerId - used to seed a UUID distinct from the HAP accessory's
      * @param displayName
@@ -155,20 +157,11 @@ class MatterEnergyBridge {
         const accessory = {
             UUID: this.uuid,
             displayName,
-            deviceType: matter.deviceTypes.OnOffOutlet,
+            deviceType: matter.deviceTypes.ElectricalSensor,
             serialNumber: String(chargerId),
             manufacturer: 'ChargePoint',
             model: 'Home Flex',
             clusters: this.buildClusters(readings),
-            handlers: {
-                // ChargePoint charging cannot be started or stopped through this
-                // plugin. Accept the command so the controller isn't left hanging,
-                // warn, and let the next poll push the true state back.
-                onOff: {
-                    on: async () => this._rejectControl(true),
-                    off: async () => this._rejectControl(false),
-                },
-            },
         };
         // Opens the first periodic-energy window so the first update() call has
         // a start point to measure from (buildClusters() already seeded the
@@ -177,7 +170,7 @@ class MatterEnergyBridge {
         try {
             await matter.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
             this.registered = true;
-            this.log.info('[matter] Published charger as a Matter outlet with electrical measurements — live power should appear on its tile in the Apple Home Energy view.');
+            this.log.info('[matter] Published charger as a Matter electrical sensor — live power should appear in the Apple Home Energy view.');
             return true;
         }
         catch (err) {
@@ -185,9 +178,6 @@ class MatterEnergyBridge {
             this.registered = false;
             return false;
         }
-    }
-    _rejectControl(requested) {
-        this.log.warn(`[matter] Ignoring request to turn the charger ${requested ? 'on' : 'off'} — ChargePoint charging cannot be controlled through this plugin.`);
     }
     // Homebridge can take a while (well past 14s on slower hosts, e.g. a
     // Raspberry Pi, or during a busy child-bridge restart) to finish
@@ -213,7 +203,6 @@ class MatterEnergyBridge {
         clusters.electricalEnergyMeasurement.periodicEnergyImported = this._nextPeriodicEnergy(readings.energyWh);
         try {
             await Promise.all([
-                matter.updateAccessoryState(this.uuid, 'onOff', clusters.onOff),
                 matter.updateAccessoryState(this.uuid, 'electricalPowerMeasurement', clusters.electricalPowerMeasurement),
                 matter.updateAccessoryState(this.uuid, 'electricalEnergyMeasurement', clusters.electricalEnergyMeasurement),
             ]);

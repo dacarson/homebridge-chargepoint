@@ -1,9 +1,10 @@
 /**
  * matterEnergy.ts
  *
- * Publishes the ChargePoint charger to Matter controllers as an outlet that
- * reports live electrical measurements, so it appears in the Apple Home
- * Energy view (iOS/tvOS 26+) with live watts on its tile.
+ * Publishes the ChargePoint charger to Matter controllers as a standalone
+ * electrical sensor, so it appears in the Apple Home Energy view (iOS/tvOS
+ * 26+) with live watts — without also showing up as a second, controllable
+ * accessory tile alongside the real HAP outlet.
  *
  * Background
  * ----------
@@ -28,11 +29,13 @@
  * Homebridge derives the mandatory cluster attributes (powerMode, accuracy,
  * numberOfMeasurementTypes) and the feature-gated ElectricalEnergyMeasurement
  * features from the declared state — declaring `cumulativeEnergyImported`
- * selects the ImportedEnergy + CumulativeEnergy features. A plain
- * `OnOffOutlet` device type that declares electricalPowerMeasurement /
- * electricalEnergyMeasurement state gets those clusters automatically; no
- * separate EnergyEvse device type is needed (and Homebridge does not
- * currently expose one — see homebridge/homebridge#3942).
+ * selects the ImportedEnergy + CumulativeEnergy features. `ElectricalSensor`
+ * (`deviceTypes.ElectricalSensor`) is Homebridge's device type specifically
+ * for a standalone power/energy meter (its own comment: "e.g. a solar or
+ * whole-home meter") — unlike `OnOffOutlet`, it carries no onOff cluster, so
+ * it doesn't present as a second controllable accessory the way the outlet
+ * shape did. No separate EnergyEvse device type is needed (and Homebridge
+ * does not currently expose one — see homebridge/homebridge#3942).
  *
  * Also declares `periodicEnergyImported` — the energy delta since the
  * previous poll, with a start/end timestamp — alongside the cumulative
@@ -59,7 +62,6 @@ export interface EnergyReadings {
     currentA: number;
     powerW: number;
     energyWh: number;
-    charging: boolean;
 }
 export declare class MatterEnergyBridge {
     private readonly log;
@@ -71,9 +73,9 @@ export declare class MatterEnergyBridge {
     private _periodStartEnergyWh;
     constructor(api: API, log: Logger);
     /**
-     * Whether this Homebridge build exposes everything needed to publish an
-     * outlet with electrical measurements. Logs at debug level so unsupported
-     * builds stay quiet.
+     * Whether this Homebridge build exposes everything needed to publish a
+     * standalone electrical sensor. Logs at debug level so unsupported builds
+     * stay quiet.
      */
     isSupported(): boolean;
     private buildClusters;
@@ -84,14 +86,13 @@ export declare class MatterEnergyBridge {
      */
     private _nextPeriodicEnergy;
     /**
-     * Register the charger as a Matter outlet with electrical measurements.
+     * Register the charger as a standalone Matter electrical sensor.
      *
      * @param chargerId - used to seed a UUID distinct from the HAP accessory's
      * @param displayName
      * @param readings - initial readings to seed the clusters with
      */
     register(chargerId: number, displayName: string, readings: EnergyReadings): Promise<boolean>;
-    private _rejectControl;
     private _isInitializingError;
     /**
      * Push fresh readings to the registered Matter accessory. No-op until
