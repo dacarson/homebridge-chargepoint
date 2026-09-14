@@ -24,6 +24,7 @@ interface ChargePointPlatformConfig extends PlatformConfig {
   password: string;
   sessionToken?: string;
   pollingIntervalSeconds?: number;
+  matter?: boolean;
 }
 
 export class ChargePointPlatform implements DynamicPlatformPlugin {
@@ -156,6 +157,7 @@ export class ChargePointPlatform implements DynamicPlatformPlugin {
       this.log,
       platformAccessory,
       this.client,
+      this.config.matter ?? false,
     );
 
     // Populate static info (model, serial, firmware)

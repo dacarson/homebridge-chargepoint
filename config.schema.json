@@ -29,6 +29,12 @@
         "type": "integer",
         "default": 30,
         "minimum": 10
+      },
+      "matter": {
+        "title": "Show in the Apple Home Energy view (via Matter)",
+        "type": "boolean",
+        "default": false,
+        "description": "Also publish the charger over Matter as a standalone electrical sensor, so live watts and energy feed the Apple Home Energy view without a second accessory tile. Requires Homebridge 2.3.0+ with Matter enabled on this plugin's child bridge; skipped safely otherwise."
       }
     }
   }
