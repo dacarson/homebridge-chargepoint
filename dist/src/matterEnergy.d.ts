@@ -75,6 +75,7 @@ export declare class MatterEnergyBridge {
      */
     register(chargerId: number, displayName: string, readings: EnergyReadings): Promise<boolean>;
     private _rejectControl;
+    private _isInitializingError;
     /**
      * Push fresh readings to the registered Matter accessory. No-op until
      * registration has succeeded.

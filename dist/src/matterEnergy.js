@@ -144,6 +144,16 @@ class MatterEnergyBridge {
     _rejectControl(requested) {
         this.log.warn(`[matter] Ignoring request to turn the charger ${requested ? 'on' : 'off'} — ChargePoint charging cannot be controlled through this plugin.`);
     }
+    // Homebridge can take a while (well past 14s on slower hosts, e.g. a
+    // Raspberry Pi, or during a busy child-bridge restart) to finish
+    // initializing a just-registered Matter endpoint. An update landing in that
+    // window is expected, not a fault — the next poll's update() call is
+    // effectively a free retry, so this only needs to be logged quietly rather
+    // than escalated like a real failure.
+    _isInitializingError(err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return /\bis still initializing\b/i.test(message);
+    }
     /**
      * Push fresh readings to the registered Matter accessory. No-op until
      * registration has succeeded.
@@ -163,6 +173,10 @@ class MatterEnergyBridge {
             ]);
         }
         catch (err) {
+            if (this._isInitializingError(err)) {
+                this.log.debug(`[matter] Update skipped — Matter endpoint is still initializing; the next poll will retry. (${err instanceof Error ? err.message : err})`);
+                return;
+            }
             // Log the first failure at warn, the rest at debug, so a persistently
             // unhappy Matter server can't flood the log on every poll.
             const message = `[matter] Failed to update Matter state: ${err instanceof Error ? err.message : err}`;
