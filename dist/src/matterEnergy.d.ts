@@ -34,6 +34,15 @@
  * separate EnergyEvse device type is needed (and Homebridge does not
  * currently expose one — see homebridge/homebridge#3942).
  *
+ * Also declares `periodicEnergyImported` — the energy delta since the
+ * previous poll, with a start/end timestamp — alongside the cumulative
+ * total. Per homebridge-shelly-matter (a more mature Matter energy-metering
+ * plugin): Apple Home's per-device energy *attribution* is driven by the
+ * PeriodicEnergy feature, not just CumulativeEnergy, and Matter composes a
+ * cluster's features once at registration — so periodicEnergyImported must
+ * be present (even as a zero placeholder) in the very first registered
+ * snapshot, or the feature never gets added at all.
+ *
  * Requirements
  * ------------
  * - Homebridge 2.3.0 or later
@@ -58,6 +67,8 @@ export declare class MatterEnergyBridge {
     private uuid;
     private registered;
     private warnedUpdate;
+    private _periodStartS;
+    private _periodStartEnergyWh;
     constructor(api: API, log: Logger);
     /**
      * Whether this Homebridge build exposes everything needed to publish an
@@ -66,6 +77,12 @@ export declare class MatterEnergyBridge {
      */
     isSupported(): boolean;
     private buildClusters;
+    /**
+     * The energy delta since the previous call, as a Matter PeriodicEnergy
+     * fragment covering [previous call's time, now]. The first call after
+     * registration has no prior window to close, so it just opens one.
+     */
+    private _nextPeriodicEnergy;
     /**
      * Register the charger as a Matter outlet with electrical measurements.
      *

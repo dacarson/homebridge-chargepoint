@@ -35,6 +35,15 @@
  * separate EnergyEvse device type is needed (and Homebridge does not
  * currently expose one — see homebridge/homebridge#3942).
  *
+ * Also declares `periodicEnergyImported` — the energy delta since the
+ * previous poll, with a start/end timestamp — alongside the cumulative
+ * total. Per homebridge-shelly-matter (a more mature Matter energy-metering
+ * plugin): Apple Home's per-device energy *attribution* is driven by the
+ * PeriodicEnergy feature, not just CumulativeEnergy, and Matter composes a
+ * cluster's features once at registration — so periodicEnergyImported must
+ * be present (even as a zero placeholder) in the very first registered
+ * snapshot, or the feature never gets added at all.
+ *
  * Requirements
  * ------------
  * - Homebridge 2.3.0 or later
@@ -60,6 +69,12 @@ class MatterEnergyBridge {
     uuid = null;
     registered = false;
     warnedUpdate = false;
+    // Tracks the current periodic-energy window: the wall-clock start and the
+    // cumulative energyWh reading at that start, so each update() call can
+    // report the delta consumed since the previous one as one contiguous,
+    // non-overlapping period.
+    _periodStartS = null;
+    _periodStartEnergyWh = 0;
     constructor(api, log) {
         this.log = log;
         this.api = api;
@@ -96,8 +111,34 @@ class MatterEnergyBridge {
             electricalEnergyMeasurement: {
                 // A wall charger only ever imports energy from the grid.
                 cumulativeEnergyImported: { energy: milli(r.energyWh) },
+                // Zero placeholder — real windows come from _nextPeriodicEnergy().
+                // Declaring the attribute here (even at zero) is what makes Matter
+                // compose the PeriodicEnergy feature at registration.
+                periodicEnergyImported: { energy: 0 },
             },
         };
+    }
+    /**
+     * The energy delta since the previous call, as a Matter PeriodicEnergy
+     * fragment covering [previous call's time, now]. The first call after
+     * registration has no prior window to close, so it just opens one.
+     */
+    _nextPeriodicEnergy(energyWh) {
+        const nowS = Math.floor(Date.now() / 1000);
+        if (this._periodStartS === null) {
+            this._periodStartS = nowS;
+            this._periodStartEnergyWh = energyWh;
+            return { energy: 0 };
+        }
+        const deltaWh = Math.max(0, energyWh - this._periodStartEnergyWh);
+        const fragment = {
+            energy: milli(deltaWh),
+            startTimestamp: this._periodStartS,
+            endTimestamp: nowS,
+        };
+        this._periodStartS = nowS;
+        this._periodStartEnergyWh = energyWh;
+        return fragment;
     }
     /**
      * Register the charger as a Matter outlet with electrical measurements.
@@ -129,6 +170,10 @@ class MatterEnergyBridge {
                 },
             },
         };
+        // Opens the first periodic-energy window so the first update() call has
+        // a start point to measure from (buildClusters() already seeded the
+        // registered snapshot's periodicEnergyImported with the same zero value).
+        this._nextPeriodicEnergy(readings.energyWh);
         try {
             await matter.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
             this.registered = true;
@@ -165,6 +210,7 @@ class MatterEnergyBridge {
         if (!matter)
             return;
         const clusters = this.buildClusters(readings);
+        clusters.electricalEnergyMeasurement.periodicEnergyImported = this._nextPeriodicEnergy(readings.energyWh);
         try {
             await Promise.all([
                 matter.updateAccessoryState(this.uuid, 'onOff', clusters.onOff),
