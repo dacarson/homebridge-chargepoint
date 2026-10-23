@@ -172,8 +172,10 @@ class ChargePointPlatform {
             return Math.max(1000, this.captchaBackoffUntil - now);
         if (now < this.authBackoffUntil)
             return Math.max(1000, this.authBackoffUntil - now);
-        if (this.rapidRefreshRemaining > 0) {
-            this.rapidRefreshRemaining--;
+        // Stay rapid while the accessory holds an optimistic state awaiting confirmation
+        if (this.rapidRefreshRemaining > 0 || this.accessory?.hasPendingState()) {
+            if (this.rapidRefreshRemaining > 0)
+                this.rapidRefreshRemaining--;
             return 5000;
         }
         const base = (this.config.pollingIntervalSeconds ?? 30) * 1000;

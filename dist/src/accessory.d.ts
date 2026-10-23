@@ -32,6 +32,8 @@ export declare class ChargePointAccessory {
     private static readonly IDLE_HISTORY_INTERVAL_MS;
     private matter;
     private commandInFlight;
+    private pendingOn;
+    private static readonly PENDING_GRACE_MS;
     constructor(api: API, log: Logger, platformAccessory: PlatformAccessory, client: ChargePointClient, matterEnabled?: boolean, requestRapidRefresh?: (() => void) | undefined);
     private _readings;
     private _getOrAdd;
@@ -41,5 +43,8 @@ export declare class ChargePointAccessory {
     private _updateHistory;
     markNoResponse(): void;
     private _setOn;
+    hasPendingState(): boolean;
+    private _resolveOn;
+    private _revertOn;
     private _maxAmperageLimit;
 }

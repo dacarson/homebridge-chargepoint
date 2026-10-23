@@ -57,6 +57,13 @@ export class ChargePointAccessory {
   // Guards against overlapping start/stop commands from rapid HomeKit toggles.
   private commandInFlight = false;
 
+  // Optimistic On state held after a toggle. The charger status endpoint lags
+  // the start/stop ack by several polls, so without this the switch bounces
+  // back until ChargePoint catches up. Cleared once status agrees, the command
+  // fails, or the grace window expires (which reverts to the reported state).
+  private pendingOn: { value: boolean; until: number } | null = null;
+  private static readonly PENDING_GRACE_MS = 60_000;
+
   constructor(
     private readonly api: API,
     private readonly log: Logger,
@@ -191,7 +198,7 @@ export class ChargePointAccessory {
       `[${this.chargerId}] isCharging=${isCharging} powerSource=${powerSource} powerKw=${powerKw} powerW=${powerW} currentA=${currentA} lifetimeKwh=${this.lifetimeKwh}`,
     );
 
-    this.charOn.updateValue(isCharging);
+    this.charOn.updateValue(this._resolveOn(isCharging));
     this.charOutletInUse.updateValue(this.status?.is_plugged_in ?? false);
     this.charCurrentConsumption.updateValue(powerW);
     this.charTotalConsumption.updateValue(this.lifetimeKwh);
@@ -244,11 +251,13 @@ export class ChargePointAccessory {
   private _setOn(turnOn: boolean): void {
     if (this.commandInFlight) {
       this.log.warn(`[${this.chargerId}] Command already in flight; ignoring new request.`);
+      this._revertOn();
       return;
     }
 
     if (turnOn) {
       this.commandInFlight = true;
+      this.pendingOn = { value: true, until: Date.now() + ChargePointAccessory.PENDING_GRACE_MS };
       const maxAmps = this._maxAmperageLimit();
       (async () => {
         if (maxAmps !== null) {
@@ -256,7 +265,10 @@ export class ChargePointAccessory {
         }
         this.session = await this.client.startChargingSession(this.chargerId);
       })()
-        .catch(err => this.log.error(`[${this.chargerId}] Start failed:`, err))
+        .catch(err => {
+          this.log.error(`[${this.chargerId}] Start failed:`, err);
+          this._revertOn();
+        })
         .finally(() => {
           this.commandInFlight = false;
           this.requestRapidRefresh?.();
@@ -264,17 +276,55 @@ export class ChargePointAccessory {
     } else {
       if (!this.session) {
         this.log.warn(`[${this.chargerId}] Stop requested but no active session known; skipping.`);
+        this._revertOn();
         return;
       }
       const { device_id, outlet_number, session_id } = this.session;
       this.commandInFlight = true;
+      this.pendingOn = { value: false, until: Date.now() + ChargePointAccessory.PENDING_GRACE_MS };
       this.client.stopChargingSession(device_id, outlet_number, session_id)
-        .catch(err => this.log.error(`[${this.chargerId}] Stop failed:`, err))
+        .catch(err => {
+          this.log.error(`[${this.chargerId}] Stop failed:`, err);
+          this._revertOn();
+        })
         .finally(() => {
           this.commandInFlight = false;
           this.requestRapidRefresh?.();
         });
     }
+  }
+
+  // True while an optimistic state is being held; the platform keeps polling
+  // at the rapid cadence until this clears.
+  hasPendingState(): boolean {
+    return this.pendingOn !== null;
+  }
+
+  // Returns the On value to report given the charger's observed state, holding
+  // the pending value until status agrees or the grace window runs out.
+  private _resolveOn(observed: boolean): boolean {
+    if (!this.pendingOn) return observed;
+    if (observed === this.pendingOn.value) {
+      this.pendingOn = null;
+      return observed;
+    }
+    if (Date.now() >= this.pendingOn.until) {
+      this.log.warn(
+        `[${this.chargerId}] Charger did not ${this.pendingOn.value ? 'start' : 'stop'} within ` +
+        `${ChargePointAccessory.PENDING_GRACE_MS / 1000}s; reverting switch.`,
+      );
+      this.pendingOn = null;
+      return observed;
+    }
+    return this.pendingOn.value;
+  }
+
+  // Drops any pending state and pushes the last observed state back to HomeKit.
+  private _revertOn(): void {
+    this.pendingOn = null;
+    const isCharging = this.status?.charging_status === 'CHARGING';
+    // Defer so the revert lands after HAP finishes processing the current set.
+    setImmediate(() => this.charOn.updateValue(isCharging));
   }
 
   private _maxAmperageLimit(): number | null {
