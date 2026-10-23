@@ -54,12 +54,16 @@ export class ChargePointAccessory {
   // but the Homebridge build doesn't support it. See matterEnergy.ts.
   private matter: MatterEnergyBridge | null = null;
 
+  // Guards against overlapping start/stop commands from rapid HomeKit toggles.
+  private commandInFlight = false;
+
   constructor(
     private readonly api: API,
     private readonly log: Logger,
     private readonly platformAccessory: PlatformAccessory,
     private readonly client: ChargePointClient,
     matterEnabled = false,
+    private readonly requestRapidRefresh?: () => void,
   ) {
     const context = platformAccessory.context as AccessoryContext;
     this.chargerId = context.chargerId;
@@ -77,6 +81,7 @@ export class ChargePointAccessory {
     // in some homebridge versions (returns undefined even when the char exists), and
     // addCharacteristic throws if the UUID is already present.
     this.charOn = this.outletService.getCharacteristic(api.hap.Characteristic.On);
+    this.charOn.onSet(value => this._setOn(value as boolean));
     this.charOutletInUse = this.outletService.getCharacteristic(api.hap.Characteristic.OutletInUse);
     this.charCurrentConsumption = this._getOrAdd(eve.CurrentConsumption());
     this.charTotalConsumption = this._getOrAdd(eve.TotalConsumption());
@@ -230,5 +235,50 @@ export class ChargePointAccessory {
 
   markNoResponse(): void {
     this.charOn.updateValue(new Error('No Response'));
+  }
+
+  // HAP set-handler for the Outlet's On characteristic. Returns immediately
+  // (optimistic) so HomeKit doesn't time out waiting on ChargePoint's
+  // ack-polling loop (up to 60s); the command runs in the background and the
+  // next poll (accelerated via requestRapidRefresh) reflects the real state.
+  private _setOn(turnOn: boolean): void {
+    if (this.commandInFlight) {
+      this.log.warn(`[${this.chargerId}] Command already in flight; ignoring new request.`);
+      return;
+    }
+
+    if (turnOn) {
+      this.commandInFlight = true;
+      const maxAmps = this._maxAmperageLimit();
+      (async () => {
+        if (maxAmps !== null) {
+          await this.client.setAmperageLimit(this.chargerId, maxAmps);
+        }
+        this.session = await this.client.startChargingSession(this.chargerId);
+      })()
+        .catch(err => this.log.error(`[${this.chargerId}] Start failed:`, err))
+        .finally(() => {
+          this.commandInFlight = false;
+          this.requestRapidRefresh?.();
+        });
+    } else {
+      if (!this.session) {
+        this.log.warn(`[${this.chargerId}] Stop requested but no active session known; skipping.`);
+        return;
+      }
+      const { device_id, outlet_number, session_id } = this.session;
+      this.commandInFlight = true;
+      this.client.stopChargingSession(device_id, outlet_number, session_id)
+        .catch(err => this.log.error(`[${this.chargerId}] Stop failed:`, err))
+        .finally(() => {
+          this.commandInFlight = false;
+          this.requestRapidRefresh?.();
+        });
+    }
+  }
+
+  private _maxAmperageLimit(): number | null {
+    const limits = this.status?.possible_amperage_limits ?? [];
+    return limits.length > 0 ? Math.max(...limits) : null;
   }
 }
