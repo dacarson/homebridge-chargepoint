@@ -36,6 +36,11 @@ export class ChargePointPlatform implements DynamicPlatformPlugin {
   private captchaBackoffUntil = 0;
   private authBackoffUntil = 0;
 
+  private pollTimeout?: NodeJS.Timeout;
+  private pollInFlight = false;
+  // Remaining fast-cadence polls after a command (setOn); consumed by _nextIntervalMs.
+  private rapidRefreshRemaining = 0;
+
   private get config(): ChargePointPlatformConfig {
     return this.rawConfig as ChargePointPlatformConfig;
   }
@@ -158,6 +163,7 @@ export class ChargePointPlatform implements DynamicPlatformPlugin {
       platformAccessory,
       this.client,
       this.config.matter ?? false,
+      () => this._triggerRapidRefresh(),
     );
 
     // Populate static info (model, serial, firmware)
@@ -198,19 +204,43 @@ export class ChargePointPlatform implements DynamicPlatformPlugin {
 
   private _scheduleNextPoll(charging = false): void {
     const interval = this._nextIntervalMs(charging);
-    setTimeout(() => this._pollCycle(), interval);
+    this.pollTimeout = setTimeout(() => this._pollCycle(), interval);
   }
 
   private _nextIntervalMs(charging = false): number {
     const now = Date.now();
     if (now < this.captchaBackoffUntil) return Math.max(1000, this.captchaBackoffUntil - now);
     if (now < this.authBackoffUntil) return Math.max(1000, this.authBackoffUntil - now);
+    // Stay rapid while the accessory holds an optimistic state awaiting confirmation
+    if (this.rapidRefreshRemaining > 0 || this.accessory?.hasPendingState()) {
+      if (this.rapidRefreshRemaining > 0) this.rapidRefreshRemaining--;
+      return 5000;
+    }
     const base = (this.config.pollingIntervalSeconds ?? 30) * 1000;
     // Use 15 s while actively charging so power readings stay fresh
     return charging ? Math.min(15_000, base) : base;
   }
 
+  // Called after a setOn() command completes so the accessory's state catches up
+  // quickly rather than waiting for the normal polling interval. Runs a few
+  // polls at 5s intervals before reverting to the normal cadence.
+  private _triggerRapidRefresh(): void {
+    this.rapidRefreshRemaining = 2;
+    if (this.pollTimeout) clearTimeout(this.pollTimeout);
+    if (!this.pollInFlight) void this._pollCycle();
+  }
+
   private async _pollCycle(): Promise<void> {
+    if (this.pollInFlight) return;
+    this.pollInFlight = true;
+    try {
+      await this._runPollCycle();
+    } finally {
+      this.pollInFlight = false;
+    }
+  }
+
+  private async _runPollCycle(): Promise<void> {
     const accessory = this.accessory;
     if (!accessory) {
       this._scheduleNextPoll();

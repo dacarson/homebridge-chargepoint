@@ -29,7 +29,7 @@ The charger appears as a single **Outlet** accessory (the service type Eve Energ
 
 | Characteristic | Description |
 |---|---|
-| On (read/write) | `true` while charging; writing starts or stops a session |
+| On (read/write) | `true` while charging; writing `true` sets the amperage limit to its maximum and starts a session, writing `false` stops it |
 | Outlet In Use (read-only) | `true` when a vehicle is plugged in |
 | Current Consumption | Instantaneous draw in watts |
 | Total Consumption | Lifetime energy in kWh (persistent across restarts) |
@@ -120,7 +120,7 @@ Once the token is saved, restart Homebridge and the plugin resumes normally.
 | Datadome CAPTCHA encountered | 5-minute backoff |
 | Session expired and re-auth failed | 15-minute backoff |
 
-> **Note:** This plugin is **read-only** — it reports charging status and readings but does not start or stop charging. Toggling `On` in the Home app has no effect; the next poll restores the true state.
+> **Note:** Toggling `On` in the Home app sets the charging amperage to its maximum available limit and starts or stops a charging session. The command is fire-and-forget — the toggle updates optimistically and the following rapid polls confirm the real state.
 
 ## Energy History (Eve)
 

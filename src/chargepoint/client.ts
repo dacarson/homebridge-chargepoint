@@ -247,6 +247,71 @@ export class ChargePointClient {
     return { session_id: sessionId, state, stations };
   }
 
+  // ── Charging Commands ────────────────────────────────────────────────────
+
+  // Polls the ack endpoint until the start/stop command is confirmed (HTTP 200),
+  // up to 20 attempts x 3s. Mirrors python-chargepoint's _send_command.
+  private async _sendCommand(
+    action: 'start' | 'stop',
+    deviceId: number,
+    portNumber?: number,
+    sessionId?: number,
+  ): Promise<void> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const body: Record<string, any> = { deviceId };
+    if (action === 'stop') {
+      body.portNumber = portNumber;
+      body.sessionId = sessionId;
+    }
+
+    const actionPath = action === 'start' ? 'startsession' : 'stopSession';
+    const url = `${this.globalConfig.endpoints.accounts_endpoint}v1/driver/station/${actionPath}`;
+    const response = await this._request('POST', url, body);
+    this._raiseForStatus(response, `Failed to send ${action} command to station.`);
+    const ackId = response.data?.ackId;
+
+    const ackUrl = `${this.globalConfig.endpoints.accounts_endpoint}v1/driver/station/session/ack`;
+    const ackBody = { ackId, action: `${action}_session` };
+
+    for (let attempt = 1; attempt <= 20; attempt++) {
+      const ackResponse = await this._request('POST', ackUrl, ackBody);
+      if (ackResponse.status === 200) {
+        this.log.debug(`Confirmed ${action} command (attempt ${attempt}/20).`);
+        return;
+      }
+      this.log.debug(
+        `${action} not yet confirmed (attempt ${attempt}/20): status=${ackResponse.status}`,
+      );
+      if (attempt < 20) await new Promise(resolve => setTimeout(resolve, 3000));
+    }
+    throw new CommunicationError(0, `Session failed to ${action} after 20 attempts.`);
+  }
+
+  async startChargingSession(deviceId: number): Promise<ChargingSession> {
+    await this._sendCommand('start', deviceId);
+    // The sessionId returned by the start command is not the real session ID —
+    // fetch it from the account-wide status once the start is confirmed.
+    const status = await this.getUserChargingStatus();
+    if (!status || status.session_id === null) {
+      throw new CommunicationError(0, 'No active charging session found after start command.');
+    }
+    const session = await this.getChargingSession(status.session_id);
+    if (!session) {
+      throw new CommunicationError(0, 'Failed to fetch charging session after start command.');
+    }
+    return session;
+  }
+
+  async stopChargingSession(deviceId: number, portNumber: number, sessionId: number): Promise<void> {
+    await this._sendCommand('stop', deviceId, portNumber, sessionId);
+  }
+
+  async setAmperageLimit(chargerId: number, amperageLimit: number): Promise<void> {
+    const url = `${this.globalConfig.endpoints.hcpo_hcm_endpoint}api/v1/configuration/chargers/${chargerId}/charge-amperage-limit`;
+    const response = await this._request('PUT', url, { chargeAmperageLimit: amperageLimit });
+    this._raiseForStatus(response, 'Failed to set amperage limit.');
+  }
+
   async getChargingSession(sessionId: number): Promise<ChargingSession | null> {
     const url = `${this.globalConfig.endpoints.internal_api_gateway_endpoint}/driver-bff/v1/sessions/${sessionId}`;
     const response = await this._request('POST', url, { charging_status: { session_id: sessionId, mfhs: [] } });
