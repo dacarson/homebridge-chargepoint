@@ -4,7 +4,7 @@
   "description": "Homebridge plugin for ChargePoint Home Flex EV charger — exposes as Eve Energy accessory",
   "main": "dist/src/index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "rm -rf dist && tsc",
     "watch": "tsc --watch",
     "prepublishOnly": "npm run build",
     "lint": "eslint src/**/*.ts"
