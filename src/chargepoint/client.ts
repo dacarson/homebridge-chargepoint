@@ -269,22 +269,39 @@ export class ChargePointClient {
     const response = await this._request('POST', url, body);
     this._raiseForStatus(response, `Failed to send ${action} command to station.`);
     const ackId = response.data?.ackId;
+    if (ackId === undefined || ackId === null) {
+      throw new CommunicationError(
+        response.status,
+        `ChargePoint did not accept the ${action} command: ${this._describeBody(response.data)}`,
+      );
+    }
 
     const ackUrl = `${this.globalConfig.endpoints.accounts_endpoint}v1/driver/station/session/ack`;
     const ackBody = { ackId, action: `${action}_session` };
 
+    let lastReason = '';
     for (let attempt = 1; attempt <= 20; attempt++) {
       const ackResponse = await this._request('POST', ackUrl, ackBody);
       if (ackResponse.status === 200) {
         this.log.debug(`Confirmed ${action} command (attempt ${attempt}/20).`);
         return;
       }
-      this.log.debug(
-        `${action} not yet confirmed (attempt ${attempt}/20): status=${ackResponse.status}`,
-      );
+      lastReason = `status=${ackResponse.status} ${this._describeBody(ackResponse.data)}`;
+      this.log.debug(`${action} not yet confirmed (attempt ${attempt}/20): ${lastReason}`);
       if (attempt < 20) await new Promise(resolve => setTimeout(resolve, 3000));
     }
-    throw new CommunicationError(0, `Session failed to ${action} after 20 attempts.`);
+    throw new CommunicationError(
+      0,
+      `Charger never confirmed the ${action} command after 20 attempts (last response: ${lastReason}). ` +
+      'Check that the vehicle is plugged in and that the ChargePoint app can control the charger.',
+    );
+  }
+
+  // Compact, length-capped rendering of an API response body for log messages.
+  private _describeBody(data: unknown): string {
+    if (data === undefined || data === null || data === '') return '(empty body)';
+    const text = typeof data === 'string' ? data : JSON.stringify(data);
+    return text.length > 300 ? `${text.slice(0, 300)}…` : text;
   }
 
   async startChargingSession(deviceId: number): Promise<ChargingSession> {

@@ -264,9 +264,10 @@ export class ChargePointAccessory {
           await this.client.setAmperageLimit(this.chargerId, maxAmps);
         }
         this.session = await this.client.startChargingSession(this.chargerId);
+        this._restartPendingGrace();
       })()
         .catch(err => {
-          this.log.error(`[${this.chargerId}] Start failed:`, err);
+          this.log.error(`[${this.chargerId}] Start failed: ${err instanceof Error ? err.message : err}`);
           this._revertOn();
         })
         .finally(() => {
@@ -283,8 +284,9 @@ export class ChargePointAccessory {
       this.commandInFlight = true;
       this.pendingOn = { value: false, until: Date.now() + ChargePointAccessory.PENDING_GRACE_MS };
       this.client.stopChargingSession(device_id, outlet_number, session_id)
+        .then(() => this._restartPendingGrace())
         .catch(err => {
-          this.log.error(`[${this.chargerId}] Stop failed:`, err);
+          this.log.error(`[${this.chargerId}] Stop failed: ${err instanceof Error ? err.message : err}`);
           this._revertOn();
         })
         .finally(() => {
@@ -308,7 +310,9 @@ export class ChargePointAccessory {
       this.pendingOn = null;
       return observed;
     }
-    if (Date.now() >= this.pendingOn.until) {
+    // Never time out while the command is still awaiting its ack; the command's
+    // own failure path reverts the switch with the real error.
+    if (!this.commandInFlight && Date.now() >= this.pendingOn.until) {
       this.log.warn(
         `[${this.chargerId}] Charger did not ${this.pendingOn.value ? 'start' : 'stop'} within ` +
         `${ChargePointAccessory.PENDING_GRACE_MS / 1000}s; reverting switch.`,
@@ -317,6 +321,12 @@ export class ChargePointAccessory {
       return observed;
     }
     return this.pendingOn.value;
+  }
+
+  // Once ChargePoint confirms a command, give the charger status endpoint the
+  // full grace window from that point to catch up.
+  private _restartPendingGrace(): void {
+    if (this.pendingOn) this.pendingOn.until = Date.now() + ChargePointAccessory.PENDING_GRACE_MS;
   }
 
   // Drops any pending state and pushes the last observed state back to HomeKit.
