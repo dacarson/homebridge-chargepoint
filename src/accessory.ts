@@ -197,6 +197,11 @@ export class ChargePointAccessory {
     this.log.debug(
       `[${this.chargerId}] isCharging=${isCharging} powerSource=${powerSource} powerKw=${powerKw} powerW=${powerW} currentA=${currentA} lifetimeKwh=${this.lifetimeKwh}`,
     );
+    // Raw inputs behind isCharging, to diagnose chargers that report state differently
+    this.log.debug(
+      `[${this.chargerId}] chargingStatus=${this.status?.charging_status || '(empty)'} pluggedIn=${this.status?.is_plugged_in} ` +
+      `session=${this.session ? `${this.session.session_id} state=${this.session.charging_state} powerKw=${this.session.power_kw}` : 'none'}`,
+    );
 
     this.charOn.updateValue(this._resolveOn(isCharging));
     this.charOutletInUse.updateValue(this.status?.is_plugged_in ?? false);

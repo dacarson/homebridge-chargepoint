@@ -198,6 +198,7 @@ export class ChargePointClient {
     const response = await this._request('GET', url);
     this._raiseForStatus(response, 'Failed to get home charger status.');
     const d = response.data ?? {};
+    this.log.debug(`[${chargerId}] status response: ${JSON.stringify(d)}`);
     const amp = d.chargeAmperageSettings ?? {};
     return {
       charger_id: chargerId,
