@@ -40,6 +40,34 @@ The Eve-specific characteristics use Eve's exact UUIDs so the Eve app renders en
 
 > **Note on voltage:** The ChargePoint API does not report input voltage anywhere (status, session, or config). The Home Flex accepts **208 or 240 V AC single-phase** input, but this is fixed by the electrical service at install (240 V for typical single-family homes, 208 V for some multi-family/commercial buildings) — it is not a configurable or queryable setting. Only the **amperage** limit is adjustable. The plugin therefore reports a fixed **240 V**.
 
+## Charging Control
+
+Toggling `On` in the Home app sets the charging amperage to its maximum available limit and starts a charging session, or stops the current one. The switch holds the position you set while ChargePoint confirms the command and the charger reports the new state, which can take 10–30 seconds. If the charger never confirms, the switch reverts and the log shows the reason ChargePoint gave.
+
+### The car owns charging
+
+An EV charger doesn't push power into the car. It tells the car *"you're allowed to charge, and this is the maximum current I can supply."* Whether the car charges, when, and how fast is entirely up to the car.
+
+The ChargePoint schedule works the same way: it only sets *when the car is allowed* to charge; it never tells the car *to* charge. If the car's own charging schedule says "not now," nothing happens, and a start from HomeKit fails with:
+
+```
+Start failed: Charger never confirmed the start command ... "errorId":494 ... "This charger isn't accepting the start command right now."
+```
+
+### Controlling charging from HomeKit
+
+For the switch to reliably start and stop charging, the car needs to want to charge all the time:
+
+1. Turn off the car's charging schedule, so it charges whenever it's allowed to.
+2. Turn off the ChargePoint schedule.
+3. Use the HomeKit switch, or HomeKit automations, to start and stop charging.
+
+Once stopped, the charger stays stopped until it's started again — it does not restart a session on its own when the car is plugged in. This lets you build your own charging schedule with HomeKit automations.
+
+> **Trade-off:** while charging is stopped, the car can't draw power from the charger, so features like morning preconditioning run off the battery. Schedule an automation to turn charging on shortly before you leave if you want preconditioning to use grid power.
+
+Stopping can also take a while: ChargePoint may report `errorId 493` ("The charger isn't responding to the stop request") for up to ~30 seconds before confirming. This is normal, and the plugin keeps retrying for about a minute.
+
 ## Requirements
 
 - **Node.js** ≥ 24.16.0
@@ -116,11 +144,9 @@ Once the token is saved, restart Homebridge and the plugin resumes normally.
 |---|---|
 | Idle / plugged in but not charging | `pollingIntervalSeconds` (default 30 s) |
 | Actively charging | 15 s |
-| Command just issued (start/stop) | 5 s × 3 polls |
+| Command just issued (start/stop) | 5 s until the charger reports the new state (up to ~60 s) |
 | Datadome CAPTCHA encountered | 5-minute backoff |
 | Session expired and re-auth failed | 15-minute backoff |
-
-> **Note:** Toggling `On` in the Home app sets the charging amperage to its maximum available limit and starts or stops a charging session. The command is fire-and-forget — the toggle updates optimistically and the following rapid polls confirm the real state.
 
 ## Energy History (Eve)
 
