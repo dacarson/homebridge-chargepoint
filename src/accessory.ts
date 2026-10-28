@@ -179,10 +179,14 @@ export class ChargePointAccessory {
     let powerKw = 0;
     let powerSource = 'none';
     if (isCharging) {
-      if (this.session !== null && this.session.power_kw > 0) {
-        // Prefer actual session measurement; fall back to last update_data point (matches Python "in_use" logic)
+      if (this.session !== null) {
+        // Trust the session's measurement whenever one exists — including 0 while the
+        // session is winding down (status still CHARGING, session not_charging).
+        // Prefer the last update_data point (matches Python "in_use" logic).
         const lastPoint = this.session.update_data.at(-1);
-        powerKw = (lastPoint && lastPoint.power_kw > 0) ? lastPoint.power_kw : this.session.power_kw;
+        if (this.session.power_kw > 0) {
+          powerKw = (lastPoint && lastPoint.power_kw > 0) ? lastPoint.power_kw : this.session.power_kw;
+        }
         powerSource = 'session';
       } else if ((this.status?.amperage_limit ?? 0) > 0) {
         // No cloud session available (scheduled/home-flex charging) — estimate from amperage limit.
