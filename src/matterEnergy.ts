@@ -37,14 +37,30 @@
  * shape did. No separate EnergyEvse device type is needed (and Homebridge
  * does not currently expose one — see homebridge/homebridge#3942).
  *
- * Also declares `periodicEnergyImported` — the energy delta since the
- * previous poll, with a start/end timestamp — alongside the cumulative
+ * Also declares `periodicEnergyImported` — the energy consumed over a
+ * reporting period, with a start/end timestamp — alongside the cumulative
  * total. Per homebridge-shelly-matter (a more mature Matter energy-metering
  * plugin): Apple Home's per-device energy *attribution* is driven by the
  * PeriodicEnergy feature, not just CumulativeEnergy, and Matter composes a
  * cluster's features once at registration — so periodicEnergyImported must
  * be present (even as a zero placeholder) in the very first registered
  * snapshot, or the feature never gets added at all.
+ *
+ * Event rate
+ * ----------
+ * Homebridge routes every energy reading present in an update through
+ * matter.js setMeasurement(), which records a CumulativeEnergyMeasured /
+ * PeriodicEnergyMeasured event for it; a reading left out of the update keeps
+ * its previous attribute value and records nothing. Sending both on every
+ * 15 s poll flooded controllers with events that almost never carried new
+ * information, so after the first update:
+ *
+ *   - cumulativeEnergyImported is sent only when the total has changed, or as
+ *     a heartbeat once ENERGY_REPORT_INTERVAL_S has passed since the last one;
+ *   - periodicEnergyImported accumulates across polls and is sent once per
+ *     ENERGY_REPORT_INTERVAL_S period — or early, as soon as energy starts
+ *     flowing after the charger goes from idle to active, so a charging
+ *     session shows up promptly.
  *
  * Requirements
  * ------------
@@ -61,6 +77,13 @@ import type { API, Logger } from 'homebridge';
 
 const PLUGIN_NAME = 'homebridge-chargepoint';
 const PLATFORM_NAME = 'ChargePoint';
+
+/**
+ * Length of a PeriodicEnergyMeasured period, and the CumulativeEnergyMeasured
+ * heartbeat interval when the total hasn't changed. Shared so that while idle
+ * both events land together on the same poll rather than on two clocks.
+ */
+export const ENERGY_REPORT_INTERVAL_S = 15 * 60;
 
 /** Matter uses milli-units for electrical measurements. */
 function milli(value: number): number {
@@ -81,12 +104,14 @@ interface PeriodicEnergy {
   endTimestamp: number;
 }
 
+interface EnergyMeasurementState {
+  cumulativeEnergyImported?: { energy: number };
+  periodicEnergyImported?: { energy: number } | PeriodicEnergy;
+}
+
 interface MatterAccessoryClusters {
   electricalPowerMeasurement: { voltage: number; activeCurrent: number; activePower: number };
-  electricalEnergyMeasurement: {
-    cumulativeEnergyImported: { energy: number };
-    periodicEnergyImported: { energy: number } | PeriodicEnergy;
-  };
+  electricalEnergyMeasurement: EnergyMeasurementState;
 }
 
 interface MatterAccessoryDefinition {
@@ -122,12 +147,24 @@ export class MatterEnergyBridge {
   private registered = false;
   private warnedUpdate = false;
 
-  // Tracks the current periodic-energy window: the wall-clock start and the
-  // cumulative energyWh reading at that start, so each update() call can
-  // report the delta consumed since the previous one as one contiguous,
-  // non-overlapping period.
+  // Tracks the open periodic-energy window: the wall-clock start and the
+  // cumulative energyWh reading at that start. Each emitted period covers
+  // [start, now] and the next one opens where it ended, so periods are
+  // contiguous and non-overlapping.
   private _periodStartS: number | null = null;
   private _periodStartEnergyWh = 0;
+
+  // Last cumulative total sent (mWh) and when, for change/heartbeat detection.
+  private _lastCumulativeMilli: number | null = null;
+  private _lastCumulativeS = 0;
+
+  // The first update() after registration always reports both readings.
+  private _firstUpdateSent = false;
+  // Whether the previous poll saw the charger drawing power.
+  private _wasActive = false;
+  // Set on an idle -> active transition; emits the open period early once it
+  // has non-zero energy, then clears.
+  private _activationPending = false;
 
   constructor(api: API, private readonly log: Logger) {
     this.api = api as APIWithMatter;
@@ -173,30 +210,54 @@ export class MatterEnergyBridge {
     };
   }
 
-  /**
-   * The energy delta since the previous call, as a Matter PeriodicEnergy
-   * fragment covering [previous call's time, now]. The first call after
-   * registration has no prior window to close, so it just opens one.
-   */
-  private _nextPeriodicEnergy(energyWh: number): PeriodicEnergy | { energy: number } {
-    const nowS = Math.floor(Date.now() / 1000);
-
-    if (this._periodStartS === null) {
-      this._periodStartS = nowS;
-      this._periodStartEnergyWh = energyWh;
-      return { energy: 0 };
-    }
-
-    const deltaWh = Math.max(0, energyWh - this._periodStartEnergyWh);
-    const fragment: PeriodicEnergy = {
-      energy: milli(deltaWh),
-      startTimestamp: this._periodStartS,
-      endTimestamp: nowS,
-    };
-
+  /** Opens a periodic-energy window starting now at the given cumulative reading. */
+  private _openPeriod(nowS: number, energyWh: number): void {
     this._periodStartS = nowS;
     this._periodStartEnergyWh = energyWh;
-    return fragment;
+  }
+
+  /**
+   * Decides which energy readings are due on this poll. Returns the state to
+   * send (empty when nothing is due) and a commit callback that advances the
+   * tracking state — called only once the update has been accepted, so a
+   * failed update leaves the window open and the next poll covers it.
+   */
+  private _dueEnergyState(readings: EnergyReadings): { state: EnergyMeasurementState; commit: () => void } {
+    const nowS = Math.floor(Date.now() / 1000);
+    const cumulativeMilli = milli(readings.energyWh);
+    const state: EnergyMeasurementState = {};
+
+    const active = readings.powerW > 0;
+    if (active && !this._wasActive) this._activationPending = true;
+    this._wasActive = active;
+
+    const cumulativeDue = !this._firstUpdateSent
+      || cumulativeMilli !== this._lastCumulativeMilli
+      || nowS - this._lastCumulativeS >= ENERGY_REPORT_INTERVAL_S;
+    if (cumulativeDue) state.cumulativeEnergyImported = { energy: cumulativeMilli };
+
+    if (this._periodStartS === null) this._openPeriod(nowS, readings.energyWh);
+    const startS = this._periodStartS!;
+    const deltaWh = Math.max(0, readings.energyWh - this._periodStartEnergyWh);
+    const periodicDue = !this._firstUpdateSent
+      || nowS - startS >= ENERGY_REPORT_INTERVAL_S
+      || (this._activationPending && deltaWh > 0);
+    if (periodicDue) {
+      state.periodicEnergyImported = { energy: milli(deltaWh), startTimestamp: startS, endTimestamp: nowS };
+    }
+
+    const commit = () => {
+      this._firstUpdateSent = true;
+      if (cumulativeDue) {
+        this._lastCumulativeMilli = cumulativeMilli;
+        this._lastCumulativeS = nowS;
+      }
+      if (periodicDue) {
+        this._openPeriod(nowS, readings.energyWh);
+        this._activationPending = false;
+      }
+    };
+    return { state, commit };
   }
 
   /**
@@ -223,8 +284,8 @@ export class MatterEnergyBridge {
 
     // Opens the first periodic-energy window so the first update() call has
     // a start point to measure from (buildClusters() already seeded the
-    // registered snapshot's periodicEnergyImported with the same zero value).
-    this._nextPeriodicEnergy(readings.energyWh);
+    // registered snapshot's periodicEnergyImported with a zero value).
+    this._openPeriod(Math.floor(Date.now() / 1000), readings.energyWh);
 
     try {
       await matter.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
@@ -259,12 +320,17 @@ export class MatterEnergyBridge {
     if (!matter) return;
 
     const clusters = this.buildClusters(readings);
-    clusters.electricalEnergyMeasurement.periodicEnergyImported = this._nextPeriodicEnergy(readings.energyWh);
+    const energy = this._dueEnergyState(readings);
+    const uuid = this.uuid;
 
     try {
       await Promise.all([
-        matter.updateAccessoryState(this.uuid, 'electricalPowerMeasurement', clusters.electricalPowerMeasurement),
-        matter.updateAccessoryState(this.uuid, 'electricalEnergyMeasurement', clusters.electricalEnergyMeasurement),
+        matter.updateAccessoryState(uuid, 'electricalPowerMeasurement', clusters.electricalPowerMeasurement),
+        // Skip the energy cluster entirely when nothing is due — even an empty
+        // update would be logged and broadcast as a state change.
+        Object.keys(energy.state).length > 0
+          ? matter.updateAccessoryState(uuid, 'electricalEnergyMeasurement', energy.state).then(energy.commit)
+          : Promise.resolve(),
       ]);
     } catch (err) {
       if (this._isInitializingError(err)) {
