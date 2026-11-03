@@ -1,6 +1,7 @@
 import type { API, Logger, PlatformAccessory } from 'homebridge';
 import type { ChargePointClient } from './chargepoint/client';
 import type { HomeChargerTechnicalInfo, ChargingSession } from './chargepoint/types';
+import { EveUpdateSettings } from './eveUpdates';
 export interface AccessoryContext {
     chargerId: number;
     displayName: string;
@@ -20,6 +21,11 @@ export declare class ChargePointAccessory {
     private readonly charTotalConsumption;
     private readonly charVoltage;
     private readonly charElectricCurrent;
+    private readonly eveUpdates;
+    private readonly eveCurrentConsumption;
+    private readonly eveTotalConsumption;
+    private readonly eveVoltage;
+    private readonly eveElectricCurrent;
     private status;
     private session;
     private lastSession;
@@ -34,7 +40,7 @@ export declare class ChargePointAccessory {
     private commandInFlight;
     private pendingOn;
     private static readonly PENDING_GRACE_MS;
-    constructor(api: API, log: Logger, platformAccessory: PlatformAccessory, client: ChargePointClient, matterEnabled?: boolean, requestRapidRefresh?: (() => void) | undefined);
+    constructor(api: API, log: Logger, platformAccessory: PlatformAccessory, client: ChargePointClient, matterEnabled?: boolean, requestRapidRefresh?: (() => void) | undefined, eveSettings?: EveUpdateSettings);
     private _readings;
     private _getOrAdd;
     initTechInfo(techInfo: HomeChargerTechnicalInfo): Promise<void>;

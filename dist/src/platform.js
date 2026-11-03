@@ -5,6 +5,7 @@ const client_1 = require("./chargepoint/client");
 const accessory_1 = require("./accessory");
 const errors_1 = require("./chargepoint/errors");
 const tokenStore_1 = require("./tokenStore");
+const eveUpdates_1 = require("./eveUpdates");
 const PLUGIN_NAME = 'homebridge-chargepoint';
 const PLATFORM_NAME = 'ChargePoint';
 class ChargePointPlatform {
@@ -127,7 +128,7 @@ class ChargePointPlatform {
             const ctx = platformAccessory.context;
             ctx.chargerId = chargerId;
         }
-        const accessory = new accessory_1.ChargePointAccessory(this.api, this.log, platformAccessory, this.client, this.config.matter ?? false, () => this._triggerRapidRefresh());
+        const accessory = new accessory_1.ChargePointAccessory(this.api, this.log, platformAccessory, this.client, this.config.matter ?? false, () => this._triggerRapidRefresh(), (0, eveUpdates_1.resolveEveUpdateSettings)(this.config, this.log));
         // Populate static info (model, serial, firmware)
         try {
             const techInfo = await this.client.getHomeChargerTechnicalInfo(chargerId);

@@ -115,6 +115,10 @@ The Setup tab handles first-run authentication and CAPTCHA recovery without you 
 | `password` | string | **required** | ChargePoint account password |
 | `pollingIntervalSeconds` | integer | `30` | How often to poll for status (minimum 10 s) |
 | `matter` | boolean | `false` | Also publish the charger over Matter as an electrical sensor, so its live watts and energy feed the Apple Home Energy view (see [Apple Home Energy & Matter](#apple-home-energy--matter)) |
+| `evePowerUpdates` | string | `"throttled"` | How Eve power/energy values are pushed to HomeKit: `"throttled"`, `"pollOnly"` or `"live"` (see [Eve power & energy updates](#eve-power--energy-updates)) |
+| `minChangeWatts` | number | `25` | Throttled: push a power change of at least this many watts… |
+| `minChangePercent` | number | `2` | …or this percentage of the last pushed value, whichever is larger |
+| `minChangeKwh` | number | `0.1` | Throttled: push a Total Consumption change of at least this many kWh |
 
 The plugin automatically discovers the single home charger registered to your account — no charger ID configuration is needed.
 
@@ -154,6 +158,20 @@ Once the token is saved, restart Homebridge and the plugin resumes normally.
 
 The plugin persists a base accumulator in Homebridge's storage directory. On each poll while a session is active it adds the session's live energy on top. When a session ends, the final session energy is committed to the base. The history begins from the plugin's first run.
 
+## Eve power & energy updates
+
+While charging, power and energy change on almost every poll. Pushing each change to every Home hub, iPhone and iPad generates a lot of HomeKit traffic, so the `evePowerUpdates` setting controls how the Eve **Current Consumption** (W), **Total Consumption** (kWh), **Voltage** and **Electric Current** values are pushed:
+
+| Mode | Behavior |
+|---|---|
+| `throttled` (default) | Pushes a change only when it's significant — power by at least `minChangeWatts` or `minChangePercent`% of the last pushed value, whichever is larger (25 W / 2%); energy by at least `minChangeKwh` (0.1 kWh) — or when 5 minutes have passed since the last push. Voltage and current change rarely and are pushed on every change. |
+| `pollOnly` | Never pushes. Controllers can't subscribe to these values; they get the newest reading whenever they read it (for example when you open the accessory in Eve). Lowest traffic. |
+| `live` | Pushes every change, as versions before 1.3.0 did. |
+
+**Automations:** Eve and Home+ automations can trigger on or check these values. `throttled` keeps those automations working, with values accurate to within the configured threshold (and exact within 5 minutes). `pollOnly` gives the lowest traffic but **breaks automations triggered by these values** — use it only if none of your automations use them.
+
+In every mode the correct current value is reported as soon as the plugin starts, and the standard HomeKit characteristics (**On** and **Outlet In Use**) always update immediately, so Home app automations are unaffected. Suppressed updates are logged at debug level, and an hourly summary of sent vs suppressed updates is logged when anything changed. The Eve history graphs are recorded separately and keep every reading.
+
 ## Apple Home Energy & Matter
 <table>
   <td>
@@ -173,7 +191,7 @@ Homebridge 2.2.0 added the Matter electrical measurement clusters to its plugin 
 | Amperage limit | `electricalPowerMeasurement.activeCurrent` | mA |
 | Power (V × A) | `electricalPowerMeasurement.activePower` | mW |
 | Lifetime kWh | `electricalEnergyMeasurement.cumulativeEnergyImported.energy` | mWh |
-| Energy since last poll | `electricalEnergyMeasurement.periodicEnergyImported.energy` | mWh |
+| Energy per 15-minute period | `electricalEnergyMeasurement.periodicEnergyImported.energy` | mWh |
 
 ### Requirements
 
@@ -195,6 +213,7 @@ cd homebridge-chargepoint
 npm install
 npm run build        # compile TypeScript → dist/
 npm run watch        # watch mode
+npm test             # unit tests (Node's built-in test runner)
 ```
 
 The Python library in `python-chargepoint/` is the authoritative API reference. There is no Python runtime dependency — all HTTP logic is ported to TypeScript in `src/chargepoint/client.ts`.
@@ -208,6 +227,7 @@ src/
   accessory.ts              ChargePointAccessory — Eve Energy outlet wrapper
   tokenStore.ts             node-persist wrapper (session token, flags, lifetime kWh)
   eveCharacteristics.ts     custom HAP characteristics matching Eve Energy UUIDs
+  eveUpdates.ts             evePowerUpdates modes (throttled / pollOnly / live)
   matterEnergy.ts           optional Matter export for the Apple Home Energy view
   chargepoint/
     client.ts               ChargePoint HTTP client (axios + tough-cookie)

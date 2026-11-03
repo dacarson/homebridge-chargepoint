@@ -15,6 +15,8 @@ import {
   saveToken,
   clearToken,
 } from './tokenStore';
+import { resolveEveUpdateSettings } from './eveUpdates';
+import type { EvePowerUpdates } from './eveUpdates';
 
 const PLUGIN_NAME = 'homebridge-chargepoint';
 const PLATFORM_NAME = 'ChargePoint';
@@ -25,6 +27,10 @@ interface ChargePointPlatformConfig extends PlatformConfig {
   sessionToken?: string;
   pollingIntervalSeconds?: number;
   matter?: boolean;
+  evePowerUpdates?: EvePowerUpdates;
+  minChangeWatts?: number;
+  minChangePercent?: number;
+  minChangeKwh?: number;
 }
 
 export class ChargePointPlatform implements DynamicPlatformPlugin {
@@ -164,6 +170,7 @@ export class ChargePointPlatform implements DynamicPlatformPlugin {
       this.client,
       this.config.matter ?? false,
       () => this._triggerRapidRefresh(),
+      resolveEveUpdateSettings(this.config, this.log),
     );
 
     // Populate static info (model, serial, firmware)
