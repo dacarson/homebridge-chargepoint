@@ -1,3 +1,4 @@
+> **⚠️ This project is no longer maintained.** I've moved away from the ChargePoint home charger and replaced it with an [OpenEVSE](https://www.openevse.com) charger, so I can no longer test or support this plugin. It will keep working for as long as ChargePoint's unofficial API stays the same, but I won't be fixing bugs or adding features. You're welcome to fork it.
 
 [![License: MIT](https://img.shields.io/github/license/dacarson/homebridge-chargepoint)](LICENSE)
 [![Version](https://img.shields.io/github/v/release/dacarson/homebridge-chargepoint)](https://github.com/dacarson/homebridge-chargepoint/releases)
