@@ -14,6 +14,15 @@ import type {
 import { buildEveCharacteristics, safeW } from './eveCharacteristics';
 import { loadLifetimeKwh, saveLifetimeKwh } from './tokenStore';
 import { MatterEnergyBridge, EnergyReadings } from './matterEnergy';
+import {
+  DEFAULT_EVE_UPDATE_SETTINGS,
+  EveCharacteristicUpdater,
+  EveUpdateGroup,
+  EveUpdateSettings,
+  anyChange,
+  kwhThreshold,
+  wattsThreshold,
+} from './eveUpdates';
 import fakegato = require('fakegato-history');
 
 export interface AccessoryContext {
@@ -34,6 +43,14 @@ export class ChargePointAccessory {
   private readonly charTotalConsumption: Characteristic;
   private readonly charVoltage: Characteristic;
   private readonly charElectricCurrent: Characteristic;
+
+  // Eve power/energy characteristics push through these, per the evePowerUpdates
+  // setting (see eveUpdates.ts). On / Outlet In Use stay fully evented.
+  private readonly eveUpdates: EveUpdateGroup;
+  private readonly eveCurrentConsumption: EveCharacteristicUpdater;
+  private readonly eveTotalConsumption: EveCharacteristicUpdater;
+  private readonly eveVoltage: EveCharacteristicUpdater;
+  private readonly eveElectricCurrent: EveCharacteristicUpdater;
 
   private status: HomeChargerStatus | null = null;
   private session: ChargingSession | null = null;
@@ -71,6 +88,7 @@ export class ChargePointAccessory {
     private readonly client: ChargePointClient,
     matterEnabled = false,
     private readonly requestRapidRefresh?: () => void,
+    eveSettings: EveUpdateSettings = DEFAULT_EVE_UPDATE_SETTINGS,
   ) {
     const context = platformAccessory.context as AccessoryContext;
     this.chargerId = context.chargerId;
@@ -94,6 +112,12 @@ export class ChargePointAccessory {
     this.charTotalConsumption = this._getOrAdd(eve.TotalConsumption());
     this.charVoltage = this._getOrAdd(eve.Voltage());
     this.charElectricCurrent = this._getOrAdd(eve.ElectricCurrent());
+
+    this.eveUpdates = new EveUpdateGroup(eveSettings, log);
+    this.eveCurrentConsumption = this.eveUpdates.add(this.charCurrentConsumption, 'watts', wattsThreshold(eveSettings));
+    this.eveTotalConsumption = this.eveUpdates.add(this.charTotalConsumption, 'kWh', kwhThreshold(eveSettings));
+    this.eveVoltage = this.eveUpdates.add(this.charVoltage, 'volts', anyChange);
+    this.eveElectricCurrent = this.eveUpdates.add(this.charElectricCurrent, 'amps', anyChange);
 
     const FakeGatoHistoryService = fakegato(api);
     this.historyService = new FakeGatoHistoryService('energy', platformAccessory, {
@@ -209,10 +233,11 @@ export class ChargePointAccessory {
 
     this.charOn.updateValue(this._resolveOn(isCharging));
     this.charOutletInUse.updateValue(this.status?.is_plugged_in ?? false);
-    this.charCurrentConsumption.updateValue(powerW);
-    this.charTotalConsumption.updateValue(this.lifetimeKwh);
-    this.charVoltage.updateValue(240.0);
-    this.charElectricCurrent.updateValue(currentA);
+    this.eveCurrentConsumption.update(powerW);
+    this.eveTotalConsumption.update(this.lifetimeKwh);
+    this.eveVoltage.update(240.0);
+    this.eveElectricCurrent.update(currentA);
+    this.eveUpdates.logStatsIfDue();
 
     // Push the same readings to the Matter export (no-op unless registered)
     if (this.matter) this.matter.update(this._readings(powerW, currentA)).catch(() => {});

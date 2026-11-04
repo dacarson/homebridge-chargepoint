@@ -35,6 +35,40 @@
         "type": "boolean",
         "default": false,
         "description": "Also publish the charger over Matter as a standalone electrical sensor, so live watts and energy feed the Apple Home Energy view without a second accessory tile. Requires Homebridge 2.3.0+ with Matter enabled on this plugin's child bridge; skipped safely otherwise."
+      },
+      "evePowerUpdates": {
+        "title": "Eve power/energy updates",
+        "type": "string",
+        "default": "throttled",
+        "oneOf": [
+          { "title": "Throttled — push significant changes, plus every 5 minutes (recommended)", "enum": ["throttled"] },
+          { "title": "Poll only — never push; lowest traffic, breaks automations triggered by these values", "enum": ["pollOnly"] },
+          { "title": "Live — push every change", "enum": ["live"] }
+        ],
+        "description": "How often the Eve Current Consumption, Total Consumption, Voltage and Electric Current values are pushed to HomeKit. Eve and Home+ automations can trigger on or check these values; only choose Poll only if none of yours do. The On and Outlet In Use switches always update immediately."
+      },
+      "minChangeWatts": {
+        "title": "Throttled: minimum power change (W)",
+        "type": "number",
+        "default": 25,
+        "minimum": 0,
+        "description": "Push a power change when it is at least this many watts or the percentage below, whichever is larger.",
+        "condition": { "functionBody": "return !model.evePowerUpdates || model.evePowerUpdates === 'throttled';" }
+      },
+      "minChangePercent": {
+        "title": "Throttled: minimum power change (%)",
+        "type": "number",
+        "default": 2,
+        "minimum": 0,
+        "condition": { "functionBody": "return !model.evePowerUpdates || model.evePowerUpdates === 'throttled';" }
+      },
+      "minChangeKwh": {
+        "title": "Throttled: minimum energy change (kWh)",
+        "type": "number",
+        "default": 0.1,
+        "minimum": 0,
+        "description": "Push a Total Consumption change when it is at least this many kWh.",
+        "condition": { "functionBody": "return !model.evePowerUpdates || model.evePowerUpdates === 'throttled';" }
       }
     }
   }

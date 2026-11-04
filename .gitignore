@@ -23,3 +23,6 @@ package-lock.json
 # Logs
 *.log
 npm-debug.log*
+
+# Test build output
+build-test/
